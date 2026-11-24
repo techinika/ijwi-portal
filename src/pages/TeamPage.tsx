@@ -13,9 +13,10 @@ import {
   where,
 } from 'firebase/firestore';
 import { Copy, Plus, Trash2, UserPlus, Mail, Target } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { apiFetch } from '../lib/api';
+import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import {
   createEnrolmentInvoice,
   dispatchPortalEmail,
@@ -29,6 +30,7 @@ export function TeamPage() {
   const { portalUser } = useAuth();
   const navigate = useNavigate();
   const [team, setTeam] = useState<PortalTeam | null>(null);
+  const [teamLoading, setTeamLoading] = useState(Boolean(portalUser?.teamId));
   const [allPlans, setAllPlans] = useState<PortalPlan[]>(DEFAULT_PLANS);
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [invites, setInvites] = useState<PortalInvite[]>([]);
@@ -40,7 +42,8 @@ export function TeamPage() {
   const [serverTopUpQuote, setServerTopUpQuote] = useState<PriceQuote | null>(null);
   const [alreadyPaidCents, setAlreadyPaidCents] = useState(0);
   const [creatingTopUp, setCreatingTopUp] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
 
   useEffect(() => {
     void fetchAllActivePlans().then((list) => {
@@ -49,19 +52,43 @@ export function TeamPage() {
   }, []);
 
   useEffect(() => {
-    if (!portalUser?.teamId) return;
+    if (!portalUser?.teamId) {
+      setTeam(null);
+      setTeamLoading(false);
+      return;
+    }
     const teamId = portalUser.teamId;
+    setTeamLoading(true);
 
-    const unsubTeam = onSnapshot(doc(db, 'portal_teams', teamId), (snap) => {
-      if (snap.exists()) {
-        setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
+    const unsubTeam = onSnapshot(
+      doc(db, 'portal_teams', teamId),
+      (snap) => {
+        if (snap.exists()) {
+          setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
+        } else {
+          setTeam(null);
+        }
+        setTeamLoading(false);
+      },
+      (err) => {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to load your team workspace.'),
+        });
+        setTeamLoading(false);
       }
-    });
+    );
 
     const unsubMembers = onSnapshot(
       query(collection(db, 'portal_teams', teamId, 'members'), where('ownerId', '==', portalUser.uid)),
       (snap) => {
         setMembers(snap.docs.map((d) => d.data() as TeamMember));
+      },
+      (err) => {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to load team members.'),
+        });
       }
     );
 
@@ -73,19 +100,25 @@ export function TeamPage() {
             .map((d) => ({ id: d.id, ...(d.data() as Omit<PortalInvite, 'id'>) }))
             .filter((i) => i.teamId === teamId)
         );
+      },
+      (err) => {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to load team invites.'),
+        });
       }
     );
 
     // Sum already paid team invoices for accurate top-up pricing
-    getDocs(query(collection(db, 'portal_invoices'), where('payerId', '==', portalUser.uid))).then(
-      (snap) => {
+    getDocs(query(collection(db, 'portal_invoices'), where('payerId', '==', portalUser.uid)))
+      .then((snap) => {
         const paidTotal = snap.docs
           .map((d) => d.data() as PortalInvoice)
           .filter((inv) => inv.teamId === teamId && inv.status === 'paid')
           .reduce((sum, inv) => sum + inv.totalCents, 0);
         setAlreadyPaidCents(paidTotal);
-      }
-    );
+      })
+      .catch(() => {});
 
     return () => {
       unsubTeam();
@@ -146,9 +179,19 @@ export function TeamPage() {
 
   if (!portalUser) return null;
 
+  if (teamLoading) {
+    return (
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 space-y-6 animate-pulse">
+        <div className="h-32 rounded-[24px] bg-[#FAFBFB] border border-[#084F4E]/10" />
+        <div className="h-64 rounded-[20px] bg-white border border-[#084F4E]/10" />
+      </div>
+    );
+  }
+
   if (!portalUser.teamId || !team) {
     return (
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-16 text-center">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-16 text-center space-y-4">
+        <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
         <h1 className="font-display text-2xl font-semibold text-[#084F4E] mb-2">
           No active team
         </h1>
@@ -163,13 +206,14 @@ export function TeamPage() {
     e.preventDefault();
     if (!portalUser || !team) return;
     setCreatingInvite(true);
-    setMessage(null);
+    setFeedback(null);
     try {
       const { rawToken, tokenHash } = await apiFetch<{ rawToken: string; tokenHash: string }>(
         '/api/invites/generate',
         { method: 'POST' }
       );
       const expiresAt = new Date(Date.now() + 14 * 86400_000).toISOString();
+      const targetEmail = inviteEmail.trim();
       await setDoc(doc(db, 'portal_invites', tokenHash), {
         teamId: team.id,
         teamName: team.name,
@@ -177,7 +221,7 @@ export function TeamPage() {
         ownerName: portalUser.displayName,
         planId: team.planId,
         tokenHash,
-        ...(inviteEmail.trim() ? { email: inviteEmail.trim() } : {}),
+        ...(targetEmail ? { email: targetEmail } : {}),
         expiresAt,
         revoked: false,
         createdAt: serverTimestamp(),
@@ -187,10 +231,10 @@ export function TeamPage() {
       const link = `${window.location.origin}/invite/${rawToken}`;
       setLatestLinks((prev) => ({ ...prev, [tokenHash]: link }));
 
-      if (inviteEmail.trim()) {
-        await dispatchPortalEmail({
+      if (targetEmail) {
+        void dispatchPortalEmail({
           userId: portalUser.uid,
-          to: inviteEmail.trim(),
+          to: targetEmail,
           recipientName: 'Friend',
           type: 'team_invite',
           subject: `${portalUser.displayName} invited you to learn Kinyarwanda at Ijwi`,
@@ -203,22 +247,66 @@ export function TeamPage() {
       }
 
       setInviteEmail('');
-      setMessage('Single-use invite link created. Copy and share it with your teammate.');
+      setFeedback({
+        type: 'success',
+        text: targetEmail
+          ? `Invite created and email queued for ${targetEmail}. You can also copy the link below.`
+          : 'Single-use invite link created. Copy and share it with your teammate.',
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to create invite link.'),
+      });
     } finally {
       setCreatingInvite(false);
     }
   }
 
   async function handleRevokeInvite(inviteId: string) {
-    await updateDoc(doc(db, 'portal_invites', inviteId), {
-      revoked: true,
-      updatedAt: serverTimestamp(),
-    });
+    setBusyKey(`revoke-${inviteId}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'portal_invites', inviteId), {
+        revoked: true,
+        updatedAt: serverTimestamp(),
+      });
+      setFeedback({ type: 'success', text: 'Invite link revoked.' });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to revoke invite link.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleRemoveMember(m: TeamMember) {
+    if (!portalUser || !team) return;
+    setBusyKey(`remove-${m.uid}`);
+    setFeedback(null);
+    try {
+      await removeTeamMember({
+        teamId: team.id,
+        memberUid: m.uid,
+        actor: portalUser,
+      });
+      setFeedback({ type: 'success', text: `${m.displayName} removed from the team.` });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to remove team member.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function handleAddSeatsInvoice() {
     if (!portalUser || !team || !topUpQuote) return;
     setCreatingTopUp(true);
+    setFeedback(null);
     try {
       let plan: PortalPlan = primaryTeamPlan;
       const pSnap = await getDoc(doc(db, 'portal_plans', team.planId));
@@ -233,7 +321,16 @@ export function TeamPage() {
         quote: topUpQuote,
         existingTeamId: team.id,
       });
+      setFeedback({
+        type: 'success',
+        text: 'Top-up invoice created! Redirecting to payment...',
+      });
       navigate(`/invoices/${invoiceId}`);
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to create top-up invoice.'),
+      });
     } finally {
       setCreatingTopUp(false);
     }
@@ -241,8 +338,19 @@ export function TeamPage() {
 
   async function handleLeaveTeam() {
     if (!portalUser || !team) return;
-    await removeTeamMember({ teamId: team.id, memberUid: portalUser.uid, actor: portalUser });
-    navigate('/profile');
+    setBusyKey('leave-team');
+    setFeedback(null);
+    try {
+      await removeTeamMember({ teamId: team.id, memberUid: portalUser.uid, actor: portalUser });
+      navigate('/profile');
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to leave team.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   const emptySeats = Math.max(0, team.seatsTotal - team.seatsUsed);
@@ -264,10 +372,11 @@ export function TeamPage() {
             <p className="text-xs font-medium text-[#0E7C7B]">Paid by {team.ownerName}</p>
             <button
               type="button"
+              disabled={busyKey === 'leave-team'}
               onClick={() => void handleLeaveTeam()}
-              className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-50"
+              className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
             >
-              Leave team
+              {busyKey === 'leave-team' ? 'Leaving...' : 'Leave team'}
             </button>
           </div>
         )}
@@ -312,11 +421,7 @@ export function TeamPage() {
         </div>
       )}
 
-      {message && (
-        <div className="rounded-2xl border border-[#0E7C7B]/25 bg-[#E6F4F4] px-5 py-3.5 text-sm text-[#084F4E]">
-          {message}
-        </div>
-      )}
+      <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
 
       {isOwner && (
         <div className="grid lg:grid-cols-12 gap-6 sm:gap-8 items-start">
@@ -382,9 +487,19 @@ export function TeamPage() {
                           {rawLink && status === 'Active' && (
                             <button
                               type="button"
-                              onClick={() => {
-                                void navigator.clipboard.writeText(rawLink);
-                                setMessage('Invite link copied to clipboard.');
+                              onClick={async () => {
+                                try {
+                                  await navigator.clipboard.writeText(rawLink);
+                                  setFeedback({
+                                    type: 'success',
+                                    text: 'Invite link copied to clipboard.',
+                                  });
+                                } catch {
+                                  setFeedback({
+                                    type: 'error',
+                                    text: 'Unable to copy to clipboard.',
+                                  });
+                                }
                               }}
                               className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] hover:bg-[#E6F4F4]"
                             >
@@ -395,10 +510,11 @@ export function TeamPage() {
                           {status === 'Active' && (
                             <button
                               type="button"
+                              disabled={busyKey === `revoke-${inv.id}`}
                               onClick={() => void handleRevokeInvite(inv.id)}
-                              className="px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-700 hover:bg-red-50"
+                              className="px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
                             >
-                              Revoke
+                              {busyKey === `revoke-${inv.id}` ? 'Revoking...' : 'Revoke'}
                             </button>
                           )}
                         </div>
@@ -429,17 +545,12 @@ export function TeamPage() {
                       {m.uid !== portalUser.uid && (
                         <button
                           type="button"
-                          onClick={() =>
-                            void removeTeamMember({
-                              teamId: team.id,
-                              memberUid: m.uid,
-                              actor: portalUser,
-                            })
-                          }
-                          className="self-start sm:self-auto inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-700 hover:bg-red-50"
+                          disabled={busyKey === `remove-${m.uid}`}
+                          onClick={() => void handleRemoveMember(m)}
+                          className="self-start sm:self-auto inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
-                          <span>Remove</span>
+                          <span>{busyKey === `remove-${m.uid}` ? 'Removing...' : 'Remove'}</span>
                         </button>
                       )}
                     </div>

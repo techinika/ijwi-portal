@@ -11,10 +11,11 @@ import {
   where,
 } from 'firebase/firestore';
 import { Calendar, Clock, Download, RefreshCw, Star } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { auth, db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchActiveTeachers } from '../lib/seed';
 import { dispatchPortalEmail, pushNotification } from '../lib/portalActions';
+import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import { canCancelWithoutPenalty, hasBookingConflict } from '../shared/pricing';
 import type { BusySlot, PortalBooking, TeacherProfile } from '../types/portal';
 
@@ -33,6 +34,7 @@ const COMMON_TIMEZONES = [
 export function BookingsPage() {
   const { portalUser } = useAuth();
   const [teachers, setTeachers] = useState<TeacherProfile[]>([]);
+  const [teachersLoading, setTeachersLoading] = useState(true);
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
   const [assignedTeacher, setAssignedTeacher] = useState<TeacherProfile | null>(null);
   const [busySlots, setBusySlots] = useState<BusySlot[]>([]);
@@ -44,7 +46,8 @@ export function BookingsPage() {
   const [reschedulingBooking, setReschedulingBooking] = useState<PortalBooking | null>(null);
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [busyBookingId, setBusyBookingId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const [ratingBookingId, setRatingBookingId] = useState<string | null>(null);
   const [ratingValue, setRatingValue] = useState(5);
   const [ratingComment, setRatingComment] = useState('');
@@ -52,24 +55,35 @@ export function BookingsPage() {
   useEffect(() => {
     if (!portalUser) return;
     setTimezone(portalUser.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+    setTeachersLoading(true);
 
-    void fetchActiveTeachers().then((activeList) => {
-      setTeachers(activeList);
-      setSelectedTeacherId((prev) => {
-        if (prev && activeList.some((t) => t.uid === prev)) return prev;
-        if (portalUser.teacherId && activeList.some((t) => t.uid === portalUser.teacherId)) {
-          return portalUser.teacherId;
-        }
-        return activeList[0]?.uid || portalUser.teacherId || '';
-      });
-    });
+    fetchActiveTeachers()
+      .then((activeList) => {
+        setTeachers(activeList);
+        setSelectedTeacherId((prev) => {
+          if (prev && activeList.some((t) => t.uid === prev)) return prev;
+          if (portalUser.teacherId && activeList.some((t) => t.uid === portalUser.teacherId)) {
+            return portalUser.teacherId;
+          }
+          return activeList[0]?.uid || portalUser.teacherId || '';
+        });
+      })
+      .catch((err) => {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to load teacher availability.'),
+        });
+      })
+      .finally(() => setTeachersLoading(false));
 
     if (portalUser.teacherId) {
-      getDoc(doc(db, 'portal_teachers', portalUser.teacherId)).then((snap) => {
-        if (snap.exists()) {
-          setAssignedTeacher(snap.data() as TeacherProfile);
-        }
-      });
+      getDoc(doc(db, 'portal_teachers', portalUser.teacherId))
+        .then((snap) => {
+          if (snap.exists()) {
+            setAssignedTeacher(snap.data() as TeacherProfile);
+          }
+        })
+        .catch(() => {});
     }
 
     const unsubMine = onSnapshot(
@@ -79,6 +93,12 @@ export function BookingsPage() {
           .map((d) => ({ id: d.id, ...(d.data() as Omit<PortalBooking, 'id'>) }))
           .sort((a, b) => Date.parse(b.startUtc) - Date.parse(a.startUtc));
         setMyBookings(list);
+      },
+      (err) => {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to load your bookings.'),
+        });
       }
     );
 
@@ -107,6 +127,12 @@ export function BookingsPage() {
         setBusySlots(
           snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<BusySlot, 'id'>) }))
         );
+      },
+      (err) => {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to load teacher schedule.'),
+        });
       }
     );
     return () => unsubBusy();
@@ -167,10 +193,17 @@ export function BookingsPage() {
   async function handleTimezoneChange(nextTz: string) {
     setTimezone(nextTz);
     if (portalUser) {
-      await updateDoc(doc(db, 'users', portalUser.uid), {
-        timezone: nextTz,
-        updatedAt: serverTimestamp(),
-      });
+      try {
+        await updateDoc(doc(db, 'users', portalUser.uid), {
+          timezone: nextTz,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to save timezone preference.'),
+        });
+      }
     }
   }
 
@@ -179,12 +212,12 @@ export function BookingsPage() {
     const chosen = openSlots.find((s) => s.startUtc === selectedSlotUtc);
     if (!chosen) return;
     if (hasBookingConflict(chosen.startUtc, chosen.endUtc, effectiveConflicts)) {
-      setMessage('That slot was just booked. Please pick another time.');
+      setFeedback({ type: 'error', text: 'That slot was just booked. Please pick another time.' });
       return;
     }
 
     setSaving(true);
-    setMessage(null);
+    setFeedback(null);
     try {
       if (reschedulingBooking) {
         await updateDoc(doc(db, 'portal_bookings', reschedulingBooking.id), {
@@ -204,7 +237,7 @@ export function BookingsPage() {
           }
         );
 
-        await pushNotification({
+        void pushNotification({
           userId: portalUser.uid,
           title: 'Lesson rescheduled',
           body: `Moved to ${chosen.localLabel} with ${reschedulingBooking.teacherName}.`,
@@ -214,7 +247,7 @@ export function BookingsPage() {
 
         setReschedulingBooking(null);
         setSelectedSlotUtc('');
-        setMessage('Lesson rescheduled!');
+        setFeedback({ type: 'success', text: 'Lesson rescheduled!' });
         return;
       }
 
@@ -239,30 +272,40 @@ export function BookingsPage() {
         updatedAt: serverTimestamp(),
       });
 
-      await pushNotification({
-        userId: portalUser.uid,
-        title: 'Lesson booked',
-        body: `Confirmed with ${bookingTeacher.displayName} for ${chosen.localLabel}.`,
-        type: 'booking',
-        link: '/bookings',
-      });
-
-      await dispatchPortalEmail({
-        userId: portalUser.uid,
-        to: portalUser.email,
-        recipientName: portalUser.displayName,
-        type: 'booking_confirmed',
-        subject: `Lesson confirmed with ${bookingTeacher.displayName}`,
-        headline: 'Your Kinyarwanda lesson is booked',
-        bodyText: `Date & time (${timezone}): ${chosen.localLabel}\nTeacher: ${bookingTeacher.displayName}\n${note ? `Your note: ${note}` : ''}`,
-        ctaLabel: 'Manage Booking',
-        ctaUrl: '/bookings',
-        essential: true,
-      });
+      const bookingNote = note;
+      void Promise.allSettled([
+        pushNotification({
+          userId: portalUser.uid,
+          title: 'Lesson booked',
+          body: `Confirmed with ${bookingTeacher.displayName} for ${chosen.localLabel}.`,
+          type: 'booking',
+          link: '/bookings',
+        }),
+        dispatchPortalEmail({
+          userId: portalUser.uid,
+          to: portalUser.email,
+          recipientName: portalUser.displayName,
+          type: 'booking_confirmed',
+          subject: `Lesson confirmed with ${bookingTeacher.displayName}`,
+          headline: 'Your Kinyarwanda lesson is booked',
+          bodyText: `Date & time (${timezone}): ${chosen.localLabel}\nTeacher: ${bookingTeacher.displayName}\n${bookingNote ? `Your note: ${bookingNote}` : ''}`,
+          ctaLabel: 'Manage Booking',
+          ctaUrl: '/bookings',
+          essential: true,
+        }),
+      ]);
 
       setSelectedSlotUtc('');
       setNote('');
-      setMessage('Lesson confirmed! You can download the calendar (.ics) file below.');
+      setFeedback({
+        type: 'success',
+        text: 'Lesson confirmed! You can download the calendar (.ics) file under My lessons.',
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to confirm lesson booking.'),
+      });
     } finally {
       setSaving(false);
     }
@@ -270,76 +313,121 @@ export function BookingsPage() {
 
   async function handleCancelBooking(b: PortalBooking) {
     if (!portalUser) return;
-    const freeCancel = canCancelWithoutPenalty(b.startUtc, 12);
-    const nextStatus = freeCancel ? 'cancelled' : 'late_cancel';
-    await updateDoc(doc(db, 'portal_bookings', b.id), {
-      status: nextStatus,
-      updatedAt: serverTimestamp(),
-    });
-    await setDoc(doc(db, 'portal_teachers', b.teacherId, 'busySlots', b.id), {
-      startUtc: b.startUtc,
-      endUtc: b.endUtc,
-      status: nextStatus,
-      updatedAt: serverTimestamp(),
-    });
-    if (!freeCancel) {
-      await updateDoc(doc(db, 'users', portalUser.uid), {
-        lateCancelCount: (portalUser.lateCancelCount || 0) + 1,
+    setBusyBookingId(`cancel-${b.id}`);
+    setFeedback(null);
+    try {
+      const freeCancel = canCancelWithoutPenalty(b.startUtc, 12);
+      const nextStatus = freeCancel ? 'cancelled' : 'late_cancel';
+      await updateDoc(doc(db, 'portal_bookings', b.id), {
+        status: nextStatus,
         updatedAt: serverTimestamp(),
       });
+      await setDoc(doc(db, 'portal_teachers', b.teacherId, 'busySlots', b.id), {
+        startUtc: b.startUtc,
+        endUtc: b.endUtc,
+        status: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
+      if (!freeCancel) {
+        await updateDoc(doc(db, 'users', portalUser.uid), {
+          lateCancelCount: (portalUser.lateCancelCount || 0) + 1,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      if (reschedulingBooking?.id === b.id) {
+        setReschedulingBooking(null);
+        setSelectedSlotUtc('');
+      }
+      setFeedback({
+        type: 'success',
+        text: freeCancel
+          ? 'Lesson cancelled.'
+          : 'Lesson cancelled within the 12-hour window and noted on your profile.',
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to cancel booking.'),
+      });
+    } finally {
+      setBusyBookingId(null);
     }
-    if (reschedulingBooking?.id === b.id) {
-      setReschedulingBooking(null);
-      setSelectedSlotUtc('');
-    }
-    setMessage(
-      freeCancel
-        ? 'Lesson cancelled.'
-        : 'Lesson cancelled within the 12-hour window and noted on your profile.'
-    );
   }
 
   async function handleDownloadIcs(b: PortalBooking) {
-    const res = await fetch('/api/bookings/ics', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${await (await import('../lib/firebase')).auth.currentUser?.getIdToken()}`,
-      },
-      body: JSON.stringify({
-        bookingId: b.id,
-        title: `Ijwi Kinyarwanda Lesson with ${b.teacherName}`,
-        description: b.note || '1-on-1 Kinyarwanda class',
-        startUtc: b.startUtc,
-        endUtc: b.endUtc,
-      }),
-    });
-    const text = await res.text();
-    const blob = new Blob([text], { type: 'text/calendar' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ijwi-lesson-${b.id}.ics`;
-    a.click();
-    URL.revokeObjectURL(url);
+    setBusyBookingId(`ics-${b.id}`);
+    setFeedback(null);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) {
+        throw new Error('Please sign in again to download your calendar invite.');
+      }
+      const res = await fetch('/api/bookings/ics', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          bookingId: b.id,
+          title: `Ijwi Kinyarwanda Lesson with ${b.teacherName}`,
+          description: b.note || '1-on-1 Kinyarwanda class',
+          startUtc: b.startUtc,
+          endUtc: b.endUtc,
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        throw new Error(`Calendar download failed (HTTP ${res.status}).`);
+      }
+      const text = await res.text();
+      const blob = new Blob([text], { type: 'text/calendar' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ijwi-lesson-${b.id}.ics`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to download calendar file.'),
+      });
+    } finally {
+      setBusyBookingId(null);
+    }
   }
 
   async function handleSubmitRating(b: PortalBooking) {
     if (!portalUser) return;
-    const fbId = `fb-${b.id}`;
-    await setDoc(doc(db, 'portal_feedback', fbId), {
-      bookingId: b.id,
-      studentId: portalUser.uid,
-      studentName: portalUser.displayName,
-      teacherId: b.teacherId,
-      teacherName: b.teacherName,
-      rating: ratingValue,
-      ...(ratingComment.trim() ? { comment: ratingComment.trim() } : {}),
-      createdAt: serverTimestamp(),
-    });
-    setRatingBookingId(null);
-    setRatingComment('');
-    setMessage('Thank you! Your feedback was shared privately with the Ijwi admin team.');
+    setBusyBookingId(`rate-${b.id}`);
+    setFeedback(null);
+    try {
+      const fbId = `fb-${b.id}`;
+      await setDoc(doc(db, 'portal_feedback', fbId), {
+        bookingId: b.id,
+        studentId: portalUser.uid,
+        studentName: portalUser.displayName,
+        teacherId: b.teacherId,
+        teacherName: b.teacherName,
+        rating: ratingValue,
+        ...(ratingComment.trim() ? { comment: ratingComment.trim() } : {}),
+        createdAt: serverTimestamp(),
+      });
+      setRatingBookingId(null);
+      setRatingComment('');
+      setFeedback({
+        type: 'success',
+        text: 'Thank you! Your feedback was shared privately with the Ijwi admin team.',
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to submit feedback.'),
+      });
+    } finally {
+      setBusyBookingId(null);
+    }
   }
 
   if (!portalUser) return null;
@@ -402,11 +490,7 @@ export function BookingsPage() {
         </div>
       </div>
 
-      {message && (
-        <div className="rounded-2xl border border-[#0E7C7B]/25 bg-[#E6F4F4] px-5 py-3.5 text-sm text-[#084F4E]">
-          {message}
-        </div>
-      )}
+      <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
 
       {reschedulingBooking && (
         <div className="rounded-2xl border border-[#C9A84C]/50 bg-[#E8C97A]/20 px-5 py-3.5 flex flex-wrap items-center justify-between gap-3 text-sm text-[#084F4E]">
@@ -429,7 +513,17 @@ export function BookingsPage() {
       <div className="grid lg:grid-cols-12 gap-6 sm:gap-8 items-start">
         {/* Slot Picker */}
         <section className="lg:col-span-7 rounded-[24px] border border-[#084F4E]/12 bg-white p-5 sm:p-8 space-y-5">
-          {!bookingTeacher ? (
+          {teachersLoading && !bookingTeacher ? (
+            <div className="space-y-3 animate-pulse py-4">
+              <div className="h-6 w-48 rounded-lg bg-[#E6F4F4]" />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="h-12 rounded-xl bg-[#FAFBFB] border border-[#084F4E]/10" />
+                <div className="h-12 rounded-xl bg-[#FAFBFB] border border-[#084F4E]/10" />
+                <div className="h-12 rounded-xl bg-[#FAFBFB] border border-[#084F4E]/10" />
+                <div className="h-12 rounded-xl bg-[#FAFBFB] border border-[#084F4E]/10" />
+              </div>
+            </div>
+          ) : !bookingTeacher ? (
             <div className="py-8 text-center space-y-2">
               <h2 className="font-display text-xl font-semibold text-[#084F4E]">
                 No teachers available yet
@@ -546,18 +640,19 @@ export function BookingsPage() {
                         <>
                           <button
                             type="button"
+                            disabled={busyBookingId === `ics-${b.id}`}
                             onClick={() => void handleDownloadIcs(b)}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#084F4E]/20 bg-white text-xs font-medium text-[#084F4E] hover:bg-[#E6F4F4]"
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#084F4E]/20 bg-white text-xs font-medium text-[#084F4E] hover:bg-[#E6F4F4] disabled:opacity-50"
                           >
                             <Download className="w-3.5 h-3.5" />
-                            <span>.ics</span>
+                            <span>{busyBookingId === `ics-${b.id}` ? '...' : '.ics'}</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => {
                               setReschedulingBooking(b);
                               setSelectedSlotUtc('');
-                              setMessage(null);
+                              setFeedback(null);
                             }}
                             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#0E7C7B]/30 bg-white text-xs font-medium text-[#0E7C7B] hover:bg-[#E6F4F4]"
                           >
@@ -566,10 +661,11 @@ export function BookingsPage() {
                           </button>
                           <button
                             type="button"
+                            disabled={busyBookingId === `cancel-${b.id}`}
                             onClick={() => void handleCancelBooking(b)}
-                            className="px-3 py-1.5 rounded-lg border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-50"
+                            className="px-3 py-1.5 rounded-lg border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
                           >
-                            Cancel
+                            {busyBookingId === `cancel-${b.id}` ? 'Cancelling...' : 'Cancel'}
                           </button>
                         </>
                       )}
@@ -613,10 +709,11 @@ export function BookingsPage() {
                         <div className="flex gap-2">
                           <button
                             type="button"
+                            disabled={busyBookingId === `rate-${b.id}`}
                             onClick={() => void handleSubmitRating(b)}
-                            className="px-3 py-1.5 rounded-lg bg-[#084F4E] text-white text-xs font-semibold"
+                            className="px-3 py-1.5 rounded-lg bg-[#084F4E] text-white text-xs font-semibold disabled:opacity-50"
                           >
-                            Submit
+                            {busyBookingId === `rate-${b.id}` ? 'Submitting...' : 'Submit'}
                           </button>
                           <button
                             type="button"

@@ -12,9 +12,10 @@ import {
   where,
 } from 'firebase/firestore';
 import { Users, Plus, Calendar } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchAllActivePlans } from '../lib/seed';
+import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import type { GroupSession, PortalPlan, PortalTeam, StudyGroup } from '../types/portal';
 
 export function SessionsAndGroupPage() {
@@ -35,21 +36,27 @@ export function SessionsAndGroupPage() {
   const [description, setDescription] = useState('');
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [busySessionId, setBusySessionId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
 
   useEffect(() => {
     if (!portalUser) return;
     void fetchAllActivePlans().then(setPlans);
 
     if (portalUser.groupId) {
-      getDoc(doc(db, 'portal_groups', portalUser.groupId)).then((snap) => {
-        if (snap.exists()) setGroup({ id: snap.id, ...(snap.data() as Omit<StudyGroup, 'id'>) });
-      });
+      getDoc(doc(db, 'portal_groups', portalUser.groupId))
+        .then((snap) => {
+          if (snap.exists()) setGroup({ id: snap.id, ...(snap.data() as Omit<StudyGroup, 'id'>) });
+        })
+        .catch(() => {});
     }
 
     if (portalUser.teamId) {
-      getDoc(doc(db, 'portal_teams', portalUser.teamId)).then((snap) => {
-        if (snap.exists()) setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
-      });
+      getDoc(doc(db, 'portal_teams', portalUser.teamId))
+        .then((snap) => {
+          if (snap.exists()) setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
+        })
+        .catch(() => {});
     } else {
       setTeam(null);
     }
@@ -62,6 +69,12 @@ export function SessionsAndGroupPage() {
             .map((d) => ({ id: d.id, ...(d.data() as Omit<GroupSession, 'id'>) }))
             .sort((a, b) => Date.parse(a.startUtc) - Date.parse(b.startUtc))
         );
+      },
+      (err) => {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to load group sessions.'),
+        });
       }
     );
     return () => unsub();
@@ -101,6 +114,7 @@ export function SessionsAndGroupPage() {
     e.preventDefault();
     if (!portalUser || !title.trim() || !startLocal) return;
     setSaving(true);
+    setFeedback(null);
     try {
       const id = `ses-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       await setDoc(doc(db, 'portal_sessions', id), {
@@ -124,9 +138,16 @@ export function SessionsAndGroupPage() {
       });
       setShowCreate(false);
       setTitle('');
+      setStartLocal('');
       setDescription('');
       setMeetingLink('');
       setSelectedPlanIds([]);
+      setFeedback({ type: 'success', text: 'Group practice session published.' });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to publish group session.'),
+      });
     } finally {
       setSaving(false);
     }
@@ -134,31 +155,56 @@ export function SessionsAndGroupPage() {
 
   async function toggleJoin(session: GroupSession) {
     if (!portalUser) return;
-    const isJoined = session.attendeeIds.includes(portalUser.uid);
-    const firstName = portalUser.displayName.split(' ')[0];
-    if (isJoined) {
-      const idx = session.attendeeIds.indexOf(portalUser.uid);
-      const nextIds = session.attendeeIds.filter((id) => id !== portalUser.uid);
-      const nextNames = session.attendeeNames.filter((_, i) => i !== idx);
-      await updateDoc(doc(db, 'portal_sessions', session.id), {
-        attendeeIds: nextIds,
-        attendeeNames: nextNames,
-        updatedAt: serverTimestamp(),
+    setBusySessionId(`join-${session.id}`);
+    setFeedback(null);
+    try {
+      const isJoined = session.attendeeIds.includes(portalUser.uid);
+      const firstName = portalUser.displayName.split(' ')[0];
+      if (isJoined) {
+        const idx = session.attendeeIds.indexOf(portalUser.uid);
+        const nextIds = session.attendeeIds.filter((id) => id !== portalUser.uid);
+        const nextNames = session.attendeeNames.filter((_, i) => i !== idx);
+        await updateDoc(doc(db, 'portal_sessions', session.id), {
+          attendeeIds: nextIds,
+          attendeeNames: nextNames,
+          updatedAt: serverTimestamp(),
+        });
+        setFeedback({ type: 'success', text: `You left "${session.title}".` });
+      } else if (session.attendeeIds.length < session.capacity) {
+        await updateDoc(doc(db, 'portal_sessions', session.id), {
+          attendeeIds: [...session.attendeeIds, portalUser.uid],
+          attendeeNames: [...session.attendeeNames, firstName],
+          updatedAt: serverTimestamp(),
+        });
+        setFeedback({ type: 'success', text: `You joined "${session.title}".` });
+      }
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update session attendance.'),
       });
-    } else if (session.attendeeIds.length < session.capacity) {
-      await updateDoc(doc(db, 'portal_sessions', session.id), {
-        attendeeIds: [...session.attendeeIds, portalUser.uid],
-        attendeeNames: [...session.attendeeNames, firstName],
-        updatedAt: serverTimestamp(),
-      });
+    } finally {
+      setBusySessionId(null);
     }
   }
 
   async function cancelSession(session: GroupSession) {
-    await updateDoc(doc(db, 'portal_sessions', session.id), {
-      status: 'cancelled',
-      updatedAt: serverTimestamp(),
-    });
+    setBusySessionId(`cancel-${session.id}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'portal_sessions', session.id), {
+        status: 'cancelled',
+        updatedAt: serverTimestamp(),
+      });
+      setFeedback({ type: 'success', text: `Cancelled session "${session.title}".` });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to cancel session.'),
+      });
+    } finally {
+      setBusySessionId(null);
+    }
   }
 
   return (
@@ -204,6 +250,7 @@ export function SessionsAndGroupPage() {
 
       {/* Peer Group Sessions */}
       <section className="space-y-6">
+        <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h2 className="font-display text-2xl font-semibold text-[#084F4E]">
@@ -466,25 +513,32 @@ export function SessionsAndGroupPage() {
                     {!isCreator && (
                       <button
                         type="button"
-                        disabled={!joined && isFull}
+                        disabled={(!joined && isFull) || busySessionId === `join-${s.id}`}
                         onClick={() => void toggleJoin(s)}
-                        className={`w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
+                        className={`w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 ${
                           joined
                             ? 'border border-[#084F4E]/20 text-[#084F4E] hover:bg-[#FAFBFB]'
-                            : 'bg-[#084F4E] text-white hover:bg-[#0E7C7B] disabled:opacity-50'
+                            : 'bg-[#084F4E] text-white hover:bg-[#0E7C7B]'
                         }`}
                       >
-                        {joined ? 'Leave session' : isFull ? 'Session full' : 'Join session'}
+                        {busySessionId === `join-${s.id}`
+                          ? 'Updating...'
+                          : joined
+                            ? 'Leave session'
+                            : isFull
+                              ? 'Session full'
+                              : 'Join session'}
                       </button>
                     )}
 
                     {isCreator && (
                       <button
                         type="button"
+                        disabled={busySessionId === `cancel-${s.id}`}
                         onClick={() => void cancelSession(s)}
-                        className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl border border-red-200 text-xs font-medium text-red-700 hover:bg-red-50"
+                        className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl border border-red-200 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
                       >
-                        Cancel session
+                        {busySessionId === `cancel-${s.id}` ? 'Cancelling...' : 'Cancel session'}
                       </button>
                     )}
                   </div>

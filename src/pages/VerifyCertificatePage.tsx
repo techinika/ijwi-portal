@@ -1,23 +1,29 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { doc, getDoc } from 'firebase/firestore';
-import { Award, CheckCircle2 } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { AlertCircle, Award, CheckCircle2 } from 'lucide-react';
+import { db, formatPortalError } from '../lib/firebase';
 import type { PortalCertificate } from '../types/portal';
 
 export function VerifyCertificatePage() {
   const { code } = useParams<{ code: string }>();
   const [cert, setCert] = useState<PortalCertificate | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!code) {
       setLoading(false);
       return;
     }
+    setLoading(true);
+    setError(null);
     getDoc(doc(db, 'portal_certificates', code))
       .then((snap) => {
         if (snap.exists()) setCert(snap.data() as PortalCertificate);
+      })
+      .catch((err) => {
+        setError(formatPortalError(err, 'Unable to verify this certificate right now.'));
       })
       .finally(() => setLoading(false));
   }, [code]);
@@ -31,6 +37,14 @@ export function VerifyCertificatePage() {
 
         {loading ? (
           <p className="text-sm text-[#3F4F4F]">Verifying certificate...</p>
+        ) : error ? (
+          <div className="space-y-2">
+            <AlertCircle className="w-6 h-6 text-red-700 mx-auto" />
+            <h1 className="font-display text-2xl font-semibold text-[#084F4E]">
+              Verification unavailable
+            </h1>
+            <p className="text-sm text-red-700">{error}</p>
+          </div>
         ) : cert ? (
           <div className="space-y-4">
             <div className="inline-flex items-center gap-2 text-xs font-semibold text-[#0E7C7B]">

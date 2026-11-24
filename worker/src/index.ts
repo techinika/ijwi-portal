@@ -57,6 +57,7 @@ async function sendViaResend(msg: EmailQueueMessage, env: Env): Promise<void> {
       html: msg.html,
       text: msg.text,
     }),
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
     const errText = await res.text();

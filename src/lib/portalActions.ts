@@ -121,22 +121,28 @@ export async function dispatchPortalEmail(params: {
 
 export async function nextInvoiceNumber(): Promise<string> {
   const year = new Date().getFullYear();
+  const fallbackNumber = () => `IJW-${year}-${String(Math.floor(1000 + Math.random() * 8999))}`;
   const counterRef = doc(db, 'portal_settings', 'counters');
   try {
-    const seq = await runTransaction(db, async (tx) => {
-      const snap = await tx.get(counterRef);
-      const current = snap.exists() ? Number(snap.data().invoiceSeq || 0) : 0;
-      const next = current + 1;
-      if (snap.exists()) {
-        tx.update(counterRef, { invoiceSeq: next, updatedAt: serverTimestamp() });
-      } else {
-        tx.set(counterRef, { invoiceSeq: next, updatedAt: serverTimestamp() });
-      }
-      return next;
-    });
+    const seq = await Promise.race([
+      runTransaction(db, async (tx) => {
+        const snap = await tx.get(counterRef);
+        const current = snap.exists() ? Number(snap.data().invoiceSeq || 0) : 0;
+        const next = current + 1;
+        if (snap.exists()) {
+          tx.update(counterRef, { invoiceSeq: next, updatedAt: serverTimestamp() });
+        } else {
+          tx.set(counterRef, { invoiceSeq: next, updatedAt: serverTimestamp() });
+        }
+        return next;
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Invoice counter timeout')), 6_000)
+      ),
+    ]);
     return `IJW-${year}-${String(seq).padStart(4, '0')}`;
   } catch {
-    return `IJW-${year}-${String(Math.floor(1000 + Math.random() * 8999))}`;
+    return fallbackNumber();
   }
 }
 
@@ -238,57 +244,55 @@ export async function createEnrolmentInvoice(params: {
     handleFirestoreError(err, OperationType.CREATE, `portal_invoices/${invoiceId}`);
   }
 
-  if (couponCode && quote.couponDiscountCents > 0) {
-    try {
-      const code = couponCode.trim().toUpperCase();
-      const cRef = doc(db, 'portal_coupons', code);
-      const cSnap = await getDoc(cRef);
-      if (cSnap.exists()) {
-        await updateDoc(cRef, {
-          usedCount: Number(cSnap.data().usedCount || 0) + 1,
-          updatedAt: serverTimestamp(),
-        });
-        await setDoc(doc(db, 'portal_coupons', code, 'redemptions', user.uid), {
-          uid: user.uid,
-          invoiceId,
-          count: 1,
-          redeemedAt: serverTimestamp(),
-        });
+  // Non-blocking coupon counter, notification, email dispatch, and audit log so the UI redirects immediately
+  void Promise.allSettled([
+    (async () => {
+      if (couponCode && quote.couponDiscountCents > 0) {
+        const code = couponCode.trim().toUpperCase();
+        const cRef = doc(db, 'portal_coupons', code);
+        const cSnap = await getDoc(cRef);
+        if (cSnap.exists()) {
+          await updateDoc(cRef, {
+            usedCount: Number(cSnap.data().usedCount || 0) + 1,
+            updatedAt: serverTimestamp(),
+          });
+          await setDoc(doc(db, 'portal_coupons', code, 'redemptions', user.uid), {
+            uid: user.uid,
+            invoiceId,
+            count: 1,
+            redeemedAt: serverTimestamp(),
+          });
+        }
       }
-    } catch (err) {
-      console.warn('Coupon redemption update skipped:', err);
-    }
-  }
-
-  await pushNotification({
-    userId: user.uid,
-    title: `Invoice ${invoiceNumber} created`,
-    body: `Your ${plan.name} invoice is ready to pay.`,
-    type: 'invoice',
-    link: `/invoices/${invoiceId}`,
-  });
-
-  await dispatchPortalEmail({
-    userId: user.uid,
-    to: user.email,
-    recipientName: user.displayName,
-    type: 'invoice_created',
-    subject: `Your Ijwi invoice ${invoiceNumber}`,
-    headline: `Invoice ${invoiceNumber} is ready`,
-    bodyText: `We prepared your invoice for ${plan.name} (${seats} ${seats === 1 ? 'seat' : 'seats'}).\nYou can pay now or return anytime from Profile > Billing.`,
-    ctaLabel: 'View & Pay Invoice',
-    ctaUrl: `/invoices/${invoiceId}`,
-    essential: true,
-  });
-
-  await logAudit({
-    actorId: user.uid,
-    actorEmail: user.email,
-    action: 'invoice_created',
-    targetType: 'invoice',
-    targetId: invoiceId,
-    summary: `Created ${invoiceNumber} (${seats} seats, total ${quote.totalCents} ${quote.currency})`,
-  });
+    })(),
+    pushNotification({
+      userId: user.uid,
+      title: `Invoice ${invoiceNumber} created`,
+      body: `Your ${plan.name} invoice is ready to pay.`,
+      type: 'invoice',
+      link: `/invoices/${invoiceId}`,
+    }),
+    dispatchPortalEmail({
+      userId: user.uid,
+      to: user.email,
+      recipientName: user.displayName,
+      type: 'invoice_created',
+      subject: `Your Ijwi invoice ${invoiceNumber}`,
+      headline: `Invoice ${invoiceNumber} is ready`,
+      bodyText: `We prepared your invoice for ${plan.name} (${seats} ${seats === 1 ? 'seat' : 'seats'}).\nYou can pay now or return anytime from Profile > Billing.`,
+      ctaLabel: 'View & Pay Invoice',
+      ctaUrl: `/invoices/${invoiceId}`,
+      essential: true,
+    }),
+    logAudit({
+      actorId: user.uid,
+      actorEmail: user.email,
+      action: 'invoice_created',
+      targetType: 'invoice',
+      targetId: invoiceId,
+      summary: `Created ${invoiceNumber} (${seats} seats, total ${quote.totalCents} ${quote.currency})`,
+    }),
+  ]);
 
   return { invoiceId, teamId: teamId || undefined };
 }
@@ -461,35 +465,35 @@ export async function activatePaidInvoice(params: {
     });
   }
 
-  await pushNotification({
-    userId: invoice.payerId,
-    title: 'Payment confirmed — Akaze!',
-    body: `Invoice ${invoice.number} is paid. Your Kinyarwanda portal is now open.`,
-    type: 'payment',
-    link: '/dashboard',
-  });
-
-  await dispatchPortalEmail({
-    userId: invoice.payerId,
-    to: invoice.payerEmail,
-    recipientName: invoice.payerName,
-    type: 'payment_receipt',
-    subject: `Receipt for Ijwi invoice ${invoice.number}`,
-    headline: 'Murakoze! Your payment is confirmed',
-    bodyText: `We received your payment for ${invoice.planName} (${invoice.number}).\nYour teacher ${teacher.displayName} is ready, and you can now book lessons, explore resources, and join sessions.`,
-    ctaLabel: 'Open Your Portal',
-    ctaUrl: '/dashboard',
-    essential: true,
-  });
-
-  await logAudit({
-    actorId: payer.uid,
-    actorEmail: payer.email,
-    action: manualReason ? 'invoice_marked_paid_manual' : 'invoice_paid',
-    targetType: 'invoice',
-    targetId: invoice.id,
-    summary: `Invoice ${invoice.number} marked paid (${paymentMethod})`,
-  });
+  void Promise.allSettled([
+    pushNotification({
+      userId: invoice.payerId,
+      title: 'Payment confirmed — Akaze!',
+      body: `Invoice ${invoice.number} is paid. Your Kinyarwanda portal is now open.`,
+      type: 'payment',
+      link: '/dashboard',
+    }),
+    dispatchPortalEmail({
+      userId: invoice.payerId,
+      to: invoice.payerEmail,
+      recipientName: invoice.payerName,
+      type: 'payment_receipt',
+      subject: `Receipt for Ijwi invoice ${invoice.number}`,
+      headline: 'Murakoze! Your payment is confirmed',
+      bodyText: `We received your payment for ${invoice.planName} (${invoice.number}).\nYour teacher ${teacher.displayName} is ready, and you can now book lessons, explore resources, and join sessions.`,
+      ctaLabel: 'Open Your Portal',
+      ctaUrl: '/dashboard',
+      essential: true,
+    }),
+    logAudit({
+      actorId: payer.uid,
+      actorEmail: payer.email,
+      action: manualReason ? 'invoice_marked_paid_manual' : 'invoice_paid',
+      targetType: 'invoice',
+      targetId: invoice.id,
+      summary: `Invoice ${invoice.number} marked paid (${paymentMethod})`,
+    }),
+  ]);
 }
 
 export async function hashInviteToken(rawToken: string): Promise<string> {

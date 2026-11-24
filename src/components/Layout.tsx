@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   Bell,
@@ -29,6 +29,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
     loading,
     authError,
     clearAuthError,
+    pendingRedirectPath,
+    clearPendingRedirectPath,
     unpaidInvoices,
     notifications,
     announcements,
@@ -41,6 +43,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
+
+  useEffect(() => {
+    if (!pendingRedirectPath) return;
+    const target = pendingRedirectPath;
+    clearPendingRedirectPath();
+    navigate(target);
+  }, [pendingRedirectPath, clearPendingRedirectPath, navigate]);
 
   const isSignedIn = Boolean(portalUser || firebaseUser);
   const displayFirstName = (

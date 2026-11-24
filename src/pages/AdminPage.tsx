@@ -21,9 +21,10 @@ import {
   Pencil,
   Trash2,
 } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { apiFetch } from '../lib/api';
+import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import {
   activatePaidInvoice,
   dispatchPortalEmail,
@@ -89,7 +90,8 @@ export function AdminPage() {
   const [adminAssignSearch, setAdminAssignSearch] = useState('');
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState('all');
   const [invoiceSearch, setInvoiceSearch] = useState('');
-  const [message, setMessage] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
 
   // Create teacher form
   const [tName, setTName] = useState('');
@@ -140,58 +142,107 @@ export function AdminPage() {
   useEffect(() => {
     if (!portalUser || portalUser.role !== 'admin') return;
 
+    const onErr = (err: unknown) => {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to load some admin records.'),
+      });
+    };
+
     const unsubs = [
-      onSnapshot(collection(db, 'users'), (s) =>
-        setUsers(s.docs.map((d) => d.data() as PortalUser))
+      onSnapshot(
+        collection(db, 'users'),
+        (s) => setUsers(s.docs.map((d) => d.data() as PortalUser)),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_teachers'), (s) =>
-        setTeachers(s.docs.map((d) => d.data() as TeacherProfile))
+      onSnapshot(
+        collection(db, 'portal_teachers'),
+        (s) => setTeachers(s.docs.map((d) => d.data() as TeacherProfile)),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_teacher_invites'), (s) =>
-        setTeacherInvites(
-          s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<TeacherInvite, 'id'>) }))
-        )
+      onSnapshot(
+        collection(db, 'portal_teacher_invites'),
+        (s) =>
+          setTeacherInvites(
+            s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<TeacherInvite, 'id'>) }))
+          ),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_invoices'), (s) =>
-        setInvoices(s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalInvoice, 'id'>) })))
+      onSnapshot(
+        collection(db, 'portal_invoices'),
+        (s) =>
+          setInvoices(
+            s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalInvoice, 'id'>) }))
+          ),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_coupons'), (s) =>
-        setCoupons(s.docs.map((d) => d.data() as PortalCoupon))
+      onSnapshot(
+        collection(db, 'portal_coupons'),
+        (s) => setCoupons(s.docs.map((d) => d.data() as PortalCoupon)),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_plans'), (s) =>
-        setPlans(s.docs.map((d) => ({ ...(d.data() as PortalPlan), id: d.id })))
+      onSnapshot(
+        collection(db, 'portal_plans'),
+        (s) => setPlans(s.docs.map((d) => ({ ...(d.data() as PortalPlan), id: d.id }))),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_teams'), (s) =>
-        setTeams(s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalTeam, 'id'>) })))
+      onSnapshot(
+        collection(db, 'portal_teams'),
+        (s) =>
+          setTeams(s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalTeam, 'id'>) }))),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_groups'), (s) =>
-        setGroups(s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<StudyGroup, 'id'>) })))
+      onSnapshot(
+        collection(db, 'portal_groups'),
+        (s) =>
+          setGroups(s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<StudyGroup, 'id'>) }))),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_bookings'), (s) =>
-        setBookings(s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalBooking, 'id'>) })))
+      onSnapshot(
+        collection(db, 'portal_bookings'),
+        (s) =>
+          setBookings(
+            s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalBooking, 'id'>) }))
+          ),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_feedback'), (s) =>
-        setFeedbackList(s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<LessonFeedback, 'id'>) })))
+      onSnapshot(
+        collection(db, 'portal_feedback'),
+        (s) =>
+          setFeedbackList(
+            s.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<LessonFeedback, 'id'>) }))
+          ),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_auditLog'), (s) =>
-        setAuditLogs(
-          s.docs.map((d) => ({
-            id: d.id,
-            ...(d.data() as { actorEmail: string; action: string; summary: string }),
-          }))
-        )
+      onSnapshot(
+        collection(db, 'portal_auditLog'),
+        (s) =>
+          setAuditLogs(
+            s.docs.map((d) => ({
+              id: d.id,
+              ...(d.data() as { actorEmail: string; action: string; summary: string }),
+            }))
+          ),
+        onErr
       ),
-      onSnapshot(collection(db, 'portal_emailLog'), (s) =>
-        setEmailLogs(
-          s.docs.map((d) => ({
-            id: d.id,
-            ...(d.data() as { to: string; subject: string; status: string }),
-          }))
-        )
+      onSnapshot(
+        collection(db, 'portal_emailLog'),
+        (s) =>
+          setEmailLogs(
+            s.docs.map((d) => ({
+              id: d.id,
+              ...(d.data() as { to: string; subject: string; status: string }),
+            }))
+          ),
+        onErr
       ),
-      onSnapshot(doc(db, 'portal_settings', 'portal'), (s) => {
-        if (s.exists()) setSettings(s.data() as PortalSettings);
-      }),
+      onSnapshot(
+        doc(db, 'portal_settings', 'portal'),
+        (s) => {
+          if (s.exists()) setSettings(s.data() as PortalSettings);
+        },
+        onErr
+      ),
     ];
 
     return () => unsubs.forEach((u) => u());
@@ -313,48 +364,65 @@ export function AdminPage() {
   async function changeUserRole(targetUser: PortalUser, nextRole: UserRole) {
     if (!portalUser) return;
     if (targetUser.uid === portalUser.uid && nextRole !== 'admin') {
-      setMessage('You cannot remove your own administrator role while signed in.');
+      setFeedback({
+        type: 'error',
+        text: 'You cannot remove your own administrator role while signed in.',
+      });
       return;
     }
 
-    await updateDoc(doc(db, 'users', targetUser.uid), {
-      role: nextRole,
-      ...(nextRole === 'teacher' || nextRole === 'admin' ? { accessActive: true } : {}),
-      updatedAt: serverTimestamp(),
-    });
+    setBusyKey(`role-${targetUser.uid}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'users', targetUser.uid), {
+        role: nextRole,
+        ...(nextRole === 'teacher' || nextRole === 'admin' ? { accessActive: true } : {}),
+        updatedAt: serverTimestamp(),
+      });
 
-    if (nextRole === 'teacher') {
-      await setDoc(
-        doc(db, 'portal_teachers', targetUser.uid),
-        {
-          uid: targetUser.uid,
-          email: targetUser.email,
-          displayName: targetUser.displayName,
-          photoUrl: targetUser.photoUrl || '',
-          bio: 'Dedicated Kinyarwanda teacher at Ijwi.',
-          availability: DEFAULT_WEEKLY_AVAILABILITY,
-          daysOff: [],
-          lessonLengthMin: 45,
-          bufferMin: 15,
-          maxPerDay: 6,
-          active: true,
-          pendingClaim: false,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+      if (nextRole === 'teacher') {
+        await setDoc(
+          doc(db, 'portal_teachers', targetUser.uid),
+          {
+            uid: targetUser.uid,
+            email: targetUser.email,
+            displayName: targetUser.displayName,
+            photoUrl: targetUser.photoUrl || '',
+            bio: 'Dedicated Kinyarwanda teacher at Ijwi.',
+            availability: DEFAULT_WEEKLY_AVAILABILITY,
+            daysOff: [],
+            lessonLengthMin: 45,
+            bufferMin: 15,
+            maxPerDay: 6,
+            active: true,
+            pendingClaim: false,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+
+      void logAudit({
+        actorId: portalUser.uid,
+        actorEmail: portalUser.email,
+        action: 'role_changed',
+        targetType: 'user',
+        targetId: targetUser.uid,
+        summary: `Changed ${targetUser.email} role to ${nextRole}`,
+      });
+      setFeedback({
+        type: 'success',
+        text: `Updated ${targetUser.displayName}'s role to ${nextRole}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update user role.'),
+      });
+    } finally {
+      setBusyKey(null);
     }
-
-    await logAudit({
-      actorId: portalUser.uid,
-      actorEmail: portalUser.email,
-      action: 'role_changed',
-      targetType: 'user',
-      targetId: targetUser.uid,
-      summary: `Changed ${targetUser.email} role to ${nextRole}`,
-    });
-    setMessage(`Updated ${targetUser.displayName}'s role to ${nextRole}.`);
   }
 
   async function handleCreateTeacher(e: React.FormEvent) {
@@ -364,7 +432,7 @@ export function AdminPage() {
     if (!cleanEmail || !cleanName) return;
 
     setCreatingTeacher(true);
-    setMessage(null);
+    setFeedback(null);
     try {
       const existingUser = users.find((u) => u.email.toLowerCase() === cleanEmail);
 
@@ -395,30 +463,33 @@ export function AdminPage() {
           },
           { merge: true }
         );
-        await dispatchPortalEmail({
-          userId: existingUser.uid,
-          to: cleanEmail,
-          recipientName: cleanName,
-          type: 'teacher_invited',
-          subject: 'Your Ijwi Teacher Desk is now active',
-          headline: 'You have been added as an Ijwi teacher',
-          bodyText:
-            'Your Teacher Desk is live. Sign in with Google to manage your weekly schedule, create learning plans with objectives, and upload resources.',
-          ctaLabel: 'Open Teacher Desk',
-          ctaUrl: '/teacher',
-          essential: true,
+        void Promise.allSettled([
+          dispatchPortalEmail({
+            userId: existingUser.uid,
+            to: cleanEmail,
+            recipientName: cleanName,
+            type: 'teacher_invited',
+            subject: 'Your Ijwi Teacher Desk is now active',
+            headline: 'You have been added as an Ijwi teacher',
+            bodyText:
+              'Your Teacher Desk is live. Sign in with Google to manage your weekly schedule, create learning plans with objectives, and upload resources.',
+            ctaLabel: 'Open Teacher Desk',
+            ctaUrl: '/teacher',
+            essential: true,
+          }),
+          logAudit({
+            actorId: portalUser!.uid,
+            actorEmail: portalUser!.email,
+            action: 'teacher_created',
+            targetType: 'teacher',
+            targetId: existingUser.uid,
+            summary: `Configured teacher ${cleanName} (${cleanEmail}) with role ${assignedRole}`,
+          }),
+        ]);
+        setFeedback({
+          type: 'success',
+          text: `${cleanName} is now an active teacher${tGrantAdmin ? ' with Admin role' : ''} and can open the Teacher Desk immediately.`,
         });
-        await logAudit({
-          actorId: portalUser!.uid,
-          actorEmail: portalUser!.email,
-          action: 'teacher_created',
-          targetType: 'teacher',
-          targetId: existingUser.uid,
-          summary: `Configured teacher ${cleanName} (${cleanEmail}) with role ${assignedRole}`,
-        });
-        setMessage(
-          `${cleanName} is now an active teacher${tGrantAdmin ? ' with Admin role' : ''} and can open the Teacher Desk immediately.`
-        );
       } else {
         const inviteId = teacherInviteDocId(cleanEmail);
         const placeholderUid = `tch-${inviteId.slice(0, 28)}-${Date.now().toString(36)}`;
@@ -452,30 +523,33 @@ export function AdminPage() {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-        await dispatchPortalEmail({
-          userId: portalUser!.uid,
-          to: cleanEmail,
-          recipientName: cleanName,
-          type: 'teacher_invited',
-          subject: 'Invitation to teach Kinyarwanda on Ijwi Portal',
-          headline: `Muraho ${cleanName}, welcome to the Ijwi Teaching Team`,
-          bodyText:
-            'An admin has set up your teacher profile. Sign in with your Google account matching this email address to unlock your Teacher Desk, create learning plans, and manage your students.',
-          ctaLabel: 'Sign in to Teacher Desk',
-          ctaUrl: '/teacher',
-          essential: true,
+        void Promise.allSettled([
+          dispatchPortalEmail({
+            userId: portalUser!.uid,
+            to: cleanEmail,
+            recipientName: cleanName,
+            type: 'teacher_invited',
+            subject: 'Invitation to teach Kinyarwanda on Ijwi Portal',
+            headline: `Muraho ${cleanName}, welcome to the Ijwi Teaching Team`,
+            bodyText:
+              'An admin has set up your teacher profile. Sign in with your Google account matching this email address to unlock your Teacher Desk, create learning plans, and manage your students.',
+            ctaLabel: 'Sign in to Teacher Desk',
+            ctaUrl: '/teacher',
+            essential: true,
+          }),
+          logAudit({
+            actorId: portalUser!.uid,
+            actorEmail: portalUser!.email,
+            action: 'teacher_invited',
+            targetType: 'teacher_invite',
+            targetId: inviteId,
+            summary: `Created teacher profile & invite for ${cleanName} (${cleanEmail})`,
+          }),
+        ]);
+        setFeedback({
+          type: 'success',
+          text: `Teacher profile created for ${cleanName}. When they sign in with Google (${cleanEmail}), they will automatically enter the Teacher Desk.`,
         });
-        await logAudit({
-          actorId: portalUser!.uid,
-          actorEmail: portalUser!.email,
-          action: 'teacher_invited',
-          targetType: 'teacher_invite',
-          targetId: inviteId,
-          summary: `Created teacher profile & invite for ${cleanName} (${cleanEmail})`,
-        });
-        setMessage(
-          `Teacher profile created for ${cleanName}. When they sign in with Google (${cleanEmail}), they will automatically enter the Teacher Desk.`
-        );
       }
 
       setTName('');
@@ -484,7 +558,10 @@ export function AdminPage() {
       setTPhotoUrl('');
       setTGrantAdmin(false);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Unable to create teacher.');
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to create teacher.'),
+      });
     } finally {
       setCreatingTeacher(false);
     }
@@ -502,126 +579,320 @@ export function AdminPage() {
 
   async function saveEditTeacher(t: TeacherProfile) {
     if (!editTName.trim()) return;
-    await updateDoc(doc(db, 'portal_teachers', t.uid), {
-      displayName: editTName.trim(),
-      bio: editTBio.trim() || 'Dedicated Kinyarwanda teacher at Ijwi.',
-      photoUrl: editTPhotoUrl.trim(),
-      lessonLengthMin: Math.max(15, Math.min(180, editTLessonMin)),
-      bufferMin: Math.max(0, Math.min(60, editTBufferMin)),
-      maxPerDay: Math.max(1, Math.min(20, editTMaxPerDay)),
-      updatedAt: serverTimestamp(),
-    });
-    await logAudit({
-      actorId: portalUser!.uid,
-      actorEmail: portalUser!.email,
-      action: 'teacher_updated',
-      targetType: 'teacher',
-      targetId: t.uid,
-      summary: `Updated profile details for teacher ${editTName.trim()}`,
-    });
-    setEditingTeacherId(null);
-    setMessage(`Updated teacher profile for ${editTName.trim()}.`);
+    setBusyKey(`edit-teacher-${t.uid}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'portal_teachers', t.uid), {
+        displayName: editTName.trim(),
+        bio: editTBio.trim() || 'Dedicated Kinyarwanda teacher at Ijwi.',
+        photoUrl: editTPhotoUrl.trim(),
+        lessonLengthMin: Math.max(15, Math.min(180, editTLessonMin)),
+        bufferMin: Math.max(0, Math.min(60, editTBufferMin)),
+        maxPerDay: Math.max(1, Math.min(20, editTMaxPerDay)),
+        updatedAt: serverTimestamp(),
+      });
+      void logAudit({
+        actorId: portalUser!.uid,
+        actorEmail: portalUser!.email,
+        action: 'teacher_updated',
+        targetType: 'teacher',
+        targetId: t.uid,
+        summary: `Updated profile details for teacher ${editTName.trim()}`,
+      });
+      setEditingTeacherId(null);
+      setFeedback({
+        type: 'success',
+        text: `Updated teacher profile for ${editTName.trim()}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update teacher profile.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function toggleTeacherActive(t: TeacherProfile) {
+    setBusyKey(`toggle-teacher-${t.uid}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'portal_teachers', t.uid), {
+        active: !t.active,
+        updatedAt: serverTimestamp(),
+      });
+      setFeedback({
+        type: 'success',
+        text: `${t.displayName} is now ${!t.active ? 'active' : 'paused'}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update teacher status.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function revokeTeacherInvite(inviteId: string) {
+    setBusyKey(`revoke-tinv-${inviteId}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'portal_teacher_invites', inviteId), {
+        revoked: true,
+        updatedAt: serverTimestamp(),
+      });
+      setFeedback({ type: 'success', text: 'Teacher invitation revoked.' });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to revoke teacher invitation.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function handleDeleteTeacher(t: TeacherProfile) {
-    await deleteDoc(doc(db, 'portal_teachers', t.uid));
-    setConfirmDeleteTeacherId(null);
-    await logAudit({
-      actorId: portalUser!.uid,
-      actorEmail: portalUser!.email,
-      action: 'teacher_deleted',
-      targetType: 'teacher',
-      targetId: t.uid,
-      summary: `Removed teacher profile ${t.displayName}`,
-    });
-    setMessage(`Removed teacher profile for ${t.displayName}.`);
+    setBusyKey(`del-teacher-${t.uid}`);
+    setFeedback(null);
+    try {
+      await deleteDoc(doc(db, 'portal_teachers', t.uid));
+      setConfirmDeleteTeacherId(null);
+      void logAudit({
+        actorId: portalUser!.uid,
+        actorEmail: portalUser!.email,
+        action: 'teacher_deleted',
+        targetType: 'teacher',
+        targetId: t.uid,
+        summary: `Removed teacher profile ${t.displayName}`,
+      });
+      setFeedback({
+        type: 'success',
+        text: `Removed teacher profile for ${t.displayName}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to remove teacher profile.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function assignUserTeacher(user: PortalUser, teacherId: string) {
+    setBusyKey(`teacher-assign-${user.uid}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        teacherId,
+        updatedAt: serverTimestamp(),
+      });
+      void logAudit({
+        actorId: portalUser!.uid,
+        actorEmail: portalUser!.email,
+        action: 'teacher_assigned',
+        targetType: 'user',
+        targetId: user.uid,
+        summary: `Assigned teacher ${teacherId || 'none'} to ${user.email}`,
+      });
+      setFeedback({
+        type: 'success',
+        text: `Updated teacher assignment for ${user.displayName}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to assign teacher.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function toggleUserStatus(user: PortalUser) {
+    setBusyKey(`status-${user.uid}`);
+    setFeedback(null);
+    try {
+      const nextStatus = user.status === 'suspended' ? 'active' : 'suspended';
+      await updateDoc(doc(db, 'users', user.uid), {
+        status: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
+      void logAudit({
+        actorId: portalUser!.uid,
+        actorEmail: portalUser!.email,
+        action: 'user_status_changed',
+        targetType: 'user',
+        targetId: user.uid,
+        summary: `Set ${user.email} status to ${nextStatus}`,
+      });
+      setFeedback({
+        type: 'success',
+        text: `${user.displayName} is now ${nextStatus}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update account status.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function toggleUserPlan(user: PortalUser, planId: string) {
-    const current = user.assignedPlanIds || [];
-    const next = current.includes(planId)
-      ? current.filter((id) => id !== planId)
-      : [...current, planId];
-    await updateDoc(doc(db, 'users', user.uid), {
-      assignedPlanIds: next,
-      updatedAt: serverTimestamp(),
-    });
-    await logAudit({
-      actorId: portalUser!.uid,
-      actorEmail: portalUser!.email,
-      action: 'learner_plans_updated',
-      targetType: 'user',
-      targetId: user.uid,
-      summary: `Updated learning plans for ${user.email} (${next.join(', ') || 'none'})`,
-    });
+    setBusyKey(`uplan-${user.uid}-${planId}`);
+    setFeedback(null);
+    try {
+      const current = user.assignedPlanIds || [];
+      const next = current.includes(planId)
+        ? current.filter((id) => id !== planId)
+        : [...current, planId];
+      await updateDoc(doc(db, 'users', user.uid), {
+        assignedPlanIds: next,
+        updatedAt: serverTimestamp(),
+      });
+      void logAudit({
+        actorId: portalUser!.uid,
+        actorEmail: portalUser!.email,
+        action: 'learner_plans_updated',
+        targetType: 'user',
+        targetId: user.uid,
+        summary: `Updated learning plans for ${user.email} (${next.join(', ') || 'none'})`,
+      });
+      setFeedback({
+        type: 'success',
+        text: `Updated applied plans for ${user.displayName}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update learner plans.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function toggleTeamPlan(team: PortalTeam, planId: string) {
-    const current = team.assignedPlanIds || (team.planId ? [team.planId] : []);
-    const next = current.includes(planId)
-      ? current.filter((id) => id !== planId)
-      : [...current, planId];
-    await updateDoc(doc(db, 'portal_teams', team.id), {
-      assignedPlanIds: next,
-      updatedAt: serverTimestamp(),
-    });
-    await logAudit({
-      actorId: portalUser!.uid,
-      actorEmail: portalUser!.email,
-      action: 'team_plans_updated',
-      targetType: 'team',
-      targetId: team.id,
-      summary: `Updated learning plans for team ${team.name} (${next.join(', ') || 'none'})`,
-    });
+    setBusyKey(`tplan-${team.id}-${planId}`);
+    setFeedback(null);
+    try {
+      const current = team.assignedPlanIds || (team.planId ? [team.planId] : []);
+      const next = current.includes(planId)
+        ? current.filter((id) => id !== planId)
+        : [...current, planId];
+      await updateDoc(doc(db, 'portal_teams', team.id), {
+        assignedPlanIds: next,
+        updatedAt: serverTimestamp(),
+      });
+      void logAudit({
+        actorId: portalUser!.uid,
+        actorEmail: portalUser!.email,
+        action: 'team_plans_updated',
+        targetType: 'team',
+        targetId: team.id,
+        summary: `Updated learning plans for team ${team.name} (${next.join(', ') || 'none'})`,
+      });
+      setFeedback({
+        type: 'success',
+        text: `Updated learning plans for ${team.name}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update team plans.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function handleGenerateNewPaymentLink(inv: PortalInvoice) {
-    const res = await apiFetch<{
-      merchantRef: string;
-      trackingId: string;
-      redirectUrl: string;
-    }>('/api/payments/pesapal/order', {
-      method: 'POST',
-      body: JSON.stringify({
-        invoiceId: inv.id,
-        invoiceNumber: inv.number,
-        amountCents: inv.totalCents,
-        currency: inv.currency,
-        description: `${inv.planName} (${inv.seats} seats)`,
-        payerEmail: inv.payerEmail,
-        payerName: inv.payerName,
-      }),
-    });
+    setBusyKey(`paylink-${inv.id}`);
+    setFeedback(null);
+    try {
+      const res = await apiFetch<{
+        merchantRef: string;
+        trackingId: string;
+        redirectUrl: string;
+      }>('/api/payments/pesapal/order', {
+        method: 'POST',
+        body: JSON.stringify({
+          invoiceId: inv.id,
+          invoiceNumber: inv.number,
+          amountCents: inv.totalCents,
+          currency: inv.currency,
+          description: `${inv.planName} (${inv.seats} seats)`,
+          payerEmail: inv.payerEmail,
+          payerName: inv.payerName,
+        }),
+      });
 
-    await updateDoc(doc(db, 'portal_invoices', inv.id), {
-      pesapalOrderRef: res.merchantRef,
-      pesapalTrackingId: res.trackingId,
-      paymentUrl: res.redirectUrl,
-      updatedAt: serverTimestamp(),
-    });
+      await updateDoc(doc(db, 'portal_invoices', inv.id), {
+        pesapalOrderRef: res.merchantRef,
+        pesapalTrackingId: res.trackingId,
+        paymentUrl: res.redirectUrl,
+        updatedAt: serverTimestamp(),
+      });
 
-    await dispatchPortalEmail({
-      userId: inv.payerId,
-      to: inv.payerEmail,
-      recipientName: inv.payerName,
-      type: 'new_payment_link',
-      subject: `New payment link for invoice ${inv.number}`,
-      headline: `Your updated payment link for ${inv.number}`,
-      bodyText: `We created a fresh payment link for ${formatMoney(inv.totalCents, inv.currency)}. The previous link has been voided.`,
-      ctaLabel: 'Pay Invoice Now',
-      ctaUrl: res.redirectUrl,
-      essential: true,
-    });
+      void Promise.allSettled([
+        dispatchPortalEmail({
+          userId: inv.payerId,
+          to: inv.payerEmail,
+          recipientName: inv.payerName,
+          type: 'new_payment_link',
+          subject: `New payment link for invoice ${inv.number}`,
+          headline: `Your updated payment link for ${inv.number}`,
+          bodyText: `We created a fresh payment link for ${formatMoney(inv.totalCents, inv.currency)}. The previous link has been voided.`,
+          ctaLabel: 'Pay Invoice Now',
+          ctaUrl: res.redirectUrl,
+          essential: true,
+        }),
+        logAudit({
+          actorId: portalUser!.uid,
+          actorEmail: portalUser!.email,
+          action: 'admin_new_payment_link',
+          targetType: 'invoice',
+          targetId: inv.id,
+          summary: `Generated and emailed new payment link for ${inv.number}`,
+        }),
+      ]);
+      setFeedback({
+        type: 'success',
+        text: `New payment link generated and emailed to ${inv.payerEmail}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to generate a new payment link.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  }
 
-    await logAudit({
-      actorId: portalUser!.uid,
-      actorEmail: portalUser!.email,
-      action: 'admin_new_payment_link',
-      targetType: 'invoice',
-      targetId: inv.id,
-      summary: `Generated and emailed new payment link for ${inv.number}`,
-    });
-    setMessage(`New payment link generated and emailed to ${inv.payerEmail}.`);
+  async function voidInvoice(inv: PortalInvoice) {
+    setBusyKey(`void-${inv.id}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'portal_invoices', inv.id), {
+        status: 'void',
+        updatedAt: serverTimestamp(),
+      });
+      setFeedback({ type: 'success', text: `Invoice ${inv.number} marked void.` });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to void invoice.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function submitInvoiceAction(inv: PortalInvoice) {
@@ -629,38 +900,49 @@ export function AdminPage() {
     const reason = invoiceAction.reason.trim();
     if (!reason) return;
 
-    if (invoiceAction.kind === 'manual_paid') {
-      const payer = users.find((u) => u.uid === inv.payerId) || portalUser!;
-      await activatePaidInvoice({
-        invoice: inv,
-        payer,
-        trackingId: `MANUAL-${Date.now()}`,
-        merchantRef: inv.number,
-        paymentMethod: 'Manual (Bank / Cash)',
-        manualReason: reason,
+    setBusyKey(`inv-action-${inv.id}`);
+    setFeedback(null);
+    try {
+      if (invoiceAction.kind === 'manual_paid') {
+        const payer = users.find((u) => u.uid === inv.payerId) || portalUser!;
+        await activatePaidInvoice({
+          invoice: inv,
+          payer,
+          trackingId: `MANUAL-${Date.now()}`,
+          merchantRef: inv.number,
+          paymentMethod: 'Manual (Bank / Cash)',
+          manualReason: reason,
+        });
+        setInvoiceAction(null);
+        setFeedback({ type: 'success', text: `Invoice ${inv.number} marked paid manually.` });
+      } else {
+        await updateDoc(doc(db, 'portal_invoices', inv.id), {
+          status: 'refunded',
+          refundReason: reason,
+          updatedAt: serverTimestamp(),
+        });
+        await updateDoc(doc(db, 'users', inv.payerId), {
+          accessActive: false,
+          updatedAt: serverTimestamp(),
+        });
+        void logAudit({
+          actorId: portalUser!.uid,
+          actorEmail: portalUser!.email,
+          action: 'invoice_refunded',
+          targetType: 'invoice',
+          targetId: inv.id,
+          summary: `Refunded ${inv.number}: ${reason}`,
+        });
+        setInvoiceAction(null);
+        setFeedback({ type: 'success', text: `Invoice ${inv.number} refunded and access revoked.` });
+      }
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update invoice.'),
       });
-      setInvoiceAction(null);
-      setMessage(`Invoice ${inv.number} marked paid manually.`);
-    } else {
-      await updateDoc(doc(db, 'portal_invoices', inv.id), {
-        status: 'refunded',
-        refundReason: reason,
-        updatedAt: serverTimestamp(),
-      });
-      await updateDoc(doc(db, 'users', inv.payerId), {
-        accessActive: false,
-        updatedAt: serverTimestamp(),
-      });
-      await logAudit({
-        actorId: portalUser!.uid,
-        actorEmail: portalUser!.email,
-        action: 'invoice_refunded',
-        targetType: 'invoice',
-        targetId: inv.id,
-        summary: `Refunded ${inv.number}: ${reason}`,
-      });
-      setInvoiceAction(null);
-      setMessage(`Invoice ${inv.number} refunded and access revoked.`);
+    } finally {
+      setBusyKey(null);
     }
   }
 
@@ -692,85 +974,164 @@ export function AdminPage() {
     e.preventDefault();
     const code = cCode.trim().toUpperCase();
     if (!code) return;
-    await setDoc(doc(db, 'portal_coupons', code), {
-      code,
-      type: cType,
-      value: cType === 'fixed' ? cValue * 100 : cValue,
-      usageLimit: cLimit,
-      usedCount: 0,
-      perPersonLimit: 1,
-      active: true,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    await logAudit({
-      actorId: portalUser!.uid,
-      actorEmail: portalUser!.email,
-      action: 'coupon_created',
-      targetType: 'coupon',
-      targetId: code,
-      summary: `Created coupon ${code} (${cValue}${cType === 'percent' ? '%' : ' USD'})`,
-    });
-    setCCode('');
-    setMessage(`Coupon ${code} created.`);
+    setBusyKey('create-coupon');
+    setFeedback(null);
+    try {
+      await setDoc(doc(db, 'portal_coupons', code), {
+        code,
+        type: cType,
+        value: cType === 'fixed' ? cValue * 100 : cValue,
+        usageLimit: cLimit,
+        usedCount: 0,
+        perPersonLimit: 1,
+        active: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      void logAudit({
+        actorId: portalUser!.uid,
+        actorEmail: portalUser!.email,
+        action: 'coupon_created',
+        targetType: 'coupon',
+        targetId: code,
+        summary: `Created coupon ${code} (${cValue}${cType === 'percent' ? '%' : ' USD'})`,
+      });
+      setCCode('');
+      setFeedback({ type: 'success', text: `Coupon ${code} created.` });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to create coupon.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function toggleCouponActive(c: PortalCoupon) {
+    setBusyKey(`coupon-${c.code}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'portal_coupons', c.code), {
+        active: !c.active,
+        updatedAt: serverTimestamp(),
+      });
+      setFeedback({
+        type: 'success',
+        text: `Coupon ${c.code} ${!c.active ? 'activated' : 'paused'}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update coupon status.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function handleCreatePlan(e: React.FormEvent) {
     e.preventDefault();
     if (!pName.trim() || !pObjective.trim()) return;
-    const slug = pName
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '')
-      .slice(0, 40);
-    const id = `${slug || 'plan'}-${Date.now().toString(36)}`;
-    await setDoc(doc(db, 'portal_plans', id), {
-      id,
-      name: pName.trim(),
-      objective: pObjective.trim(),
-      description: pDesc.trim() || 'Guided Kinyarwanda plan with teacher support.',
-      level: pLevel,
-      teacherId: portalUser!.uid,
-      teacherName: portalUser!.displayName,
-      unitPriceCents: Math.round(pPriceUsd * 100),
-      currency: settings.currency || 'USD',
-      included: DEFAULT_PLANS[0].included,
-      learningPath: DEFAULT_PLANS[0].learningPath,
-      isPublicEnrolment: pPublicEnrol,
-      active: true,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    setPName('');
-    setPObjective('');
-    setPDesc('');
-    setMessage(`Plan "${pName.trim()}" added.`);
+    setBusyKey('create-plan');
+    setFeedback(null);
+    try {
+      const slug = pName
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '')
+        .slice(0, 40);
+      const id = `${slug || 'plan'}-${Date.now().toString(36)}`;
+      const createdName = pName.trim();
+      await setDoc(doc(db, 'portal_plans', id), {
+        id,
+        name: createdName,
+        objective: pObjective.trim(),
+        description: pDesc.trim() || 'Guided Kinyarwanda plan with teacher support.',
+        level: pLevel,
+        teacherId: portalUser!.uid,
+        teacherName: portalUser!.displayName,
+        unitPriceCents: Math.round(pPriceUsd * 100),
+        currency: settings.currency || 'USD',
+        included: DEFAULT_PLANS[0].included,
+        learningPath: DEFAULT_PLANS[0].learningPath,
+        isPublicEnrolment: pPublicEnrol,
+        active: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      setPName('');
+      setPObjective('');
+      setPDesc('');
+      setFeedback({ type: 'success', text: `Plan "${createdName}" added.` });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to create learning plan.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function togglePlanActive(pl: PortalPlan) {
+    setBusyKey(`plan-${pl.id}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'portal_plans', pl.id), {
+        active: !pl.active,
+        updatedAt: serverTimestamp(),
+      });
+      setFeedback({
+        type: 'success',
+        text: `Plan "${pl.name}" ${!pl.active ? 'activated' : 'archived'}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update plan status.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function handlePublishAnnouncement(e: React.FormEvent) {
     e.preventDefault();
     if (!annTitle.trim() || !annBody.trim()) return;
-    const id = `ann-${Date.now()}`;
-    await setDoc(doc(db, 'portal_announcements', id), {
-      title: annTitle.trim(),
-      body: annBody.trim(),
-      audienceType: 'all',
-      authorId: portalUser!.uid,
-      active: true,
-      createdAt: serverTimestamp(),
-    });
-    await logAudit({
-      actorId: portalUser!.uid,
-      actorEmail: portalUser!.email,
-      action: 'announcement_published',
-      targetType: 'announcement',
-      targetId: id,
-      summary: `Published banner: ${annTitle.trim()}`,
-    });
-    setAnnTitle('');
-    setAnnBody('');
-    setMessage('Announcement published across the portal.');
+    setBusyKey('create-announcement');
+    setFeedback(null);
+    try {
+      const id = `ann-${Date.now()}`;
+      const titleText = annTitle.trim();
+      await setDoc(doc(db, 'portal_announcements', id), {
+        title: titleText,
+        body: annBody.trim(),
+        audienceType: 'all',
+        authorId: portalUser!.uid,
+        active: true,
+        createdAt: serverTimestamp(),
+      });
+      void logAudit({
+        actorId: portalUser!.uid,
+        actorEmail: portalUser!.email,
+        action: 'announcement_published',
+        targetType: 'announcement',
+        targetId: id,
+        summary: `Published banner: ${titleText}`,
+      });
+      setAnnTitle('');
+      setAnnBody('');
+      setFeedback({ type: 'success', text: 'Announcement published across the portal.' });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to publish announcement.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   const weeklyFlierText = `This week at Ijwi: ${activeStudents} active learners, ${users.length} total sign-ups, and ${lessonsThisWeek} completed lessons. ${settings.weeklyFlierNote || ''}`;
@@ -815,11 +1176,7 @@ export function AdminPage() {
         </div>
       </div>
 
-      {message && (
-        <div className="rounded-2xl border border-[#0E7C7B]/25 bg-[#E6F4F4] px-4 sm:px-5 py-3 text-sm text-[#084F4E]">
-          {message}
-        </div>
-      )}
+      <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
 
       {tab === 'overview' && (
         <div className="space-y-6 sm:space-y-8">
@@ -852,9 +1209,13 @@ export function AdminPage() {
             <p className="text-sm text-[#1F2A2A]">{weeklyFlierText}</p>
             <button
               type="button"
-              onClick={() => {
-                void navigator.clipboard.writeText(weeklyFlierText);
-                setMessage('Weekly milestone flier text copied.');
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(weeklyFlierText);
+                  setFeedback({ type: 'success', text: 'Weekly milestone flier text copied.' });
+                } catch {
+                  setFeedback({ type: 'error', text: 'Unable to copy to clipboard.' });
+                }
               }}
               className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-[#084F4E]/20 bg-white text-xs font-semibold text-[#084F4E]"
             >
@@ -1196,10 +1557,11 @@ export function AdminPage() {
                           <div className="flex flex-wrap gap-2">
                             <button
                               type="button"
+                              disabled={busyKey === `edit-teacher-${t.uid}`}
                               onClick={() => void saveEditTeacher(t)}
-                              className="px-4 py-2 rounded-xl bg-[#084F4E] text-white text-xs font-semibold"
+                              className="px-4 py-2 rounded-xl bg-[#084F4E] text-white text-xs font-semibold disabled:opacity-50"
                             >
-                              Save changes
+                              {busyKey === `edit-teacher-${t.uid}` ? 'Saving...' : 'Save changes'}
                             </button>
                             <button
                               type="button"
@@ -1247,13 +1609,9 @@ export function AdminPage() {
                           <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#084F4E]/10">
                             <button
                               type="button"
-                              onClick={() =>
-                                void updateDoc(doc(db, 'portal_teachers', t.uid), {
-                                  active: !t.active,
-                                  updatedAt: serverTimestamp(),
-                                })
-                              }
-                              className="px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] hover:bg-[#E6F4F4]"
+                              disabled={busyKey === `toggle-teacher-${t.uid}`}
+                              onClick={() => void toggleTeacherActive(t)}
+                              className="px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] hover:bg-[#E6F4F4] disabled:opacity-50"
                             >
                               {t.active ? 'Pause' : 'Activate'}
                             </button>
@@ -1270,13 +1628,14 @@ export function AdminPage() {
                             {linkedUser && linkedUser.uid !== portalUser.uid && (
                               <button
                                 type="button"
+                                disabled={busyKey === `role-${linkedUser.uid}`}
                                 onClick={() =>
                                   void changeUserRole(
                                     linkedUser,
                                     linkedUser.role === 'admin' ? 'teacher' : 'admin'
                                   )
                                 }
-                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#C9A84C]/50 bg-[#E8C97A]/20 text-xs font-semibold text-[#084F4E]"
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#C9A84C]/50 bg-[#E8C97A]/20 text-xs font-semibold text-[#084F4E] disabled:opacity-50"
                               >
                                 <ShieldCheck className="w-3.5 h-3.5" />
                                 <span>
@@ -1289,10 +1648,11 @@ export function AdminPage() {
                               <div className="flex items-center gap-1.5 ml-auto">
                                 <button
                                   type="button"
+                                  disabled={busyKey === `del-teacher-${t.uid}`}
                                   onClick={() => void handleDeleteTeacher(t)}
-                                  className="px-3 py-1.5 rounded-lg bg-red-700 text-white text-xs font-semibold"
+                                  className="px-3 py-1.5 rounded-lg bg-red-700 text-white text-xs font-semibold disabled:opacity-50"
                                 >
-                                  Confirm remove
+                                  {busyKey === `del-teacher-${t.uid}` ? 'Removing...' : 'Confirm remove'}
                                 </button>
                                 <button
                                   type="button"
@@ -1338,15 +1698,11 @@ export function AdminPage() {
                       </span>
                       <button
                         type="button"
-                        onClick={() =>
-                          void updateDoc(doc(db, 'portal_teacher_invites', inv.id), {
-                            revoked: true,
-                            updatedAt: serverTimestamp(),
-                          })
-                        }
-                        className="text-red-700 hover:underline"
+                        disabled={busyKey === `revoke-tinv-${inv.id}`}
+                        onClick={() => void revokeTeacherInvite(inv.id)}
+                        className="text-red-700 hover:underline disabled:opacity-50"
                       >
-                        Revoke
+                        {busyKey === `revoke-tinv-${inv.id}` ? 'Revoking...' : 'Revoke'}
                       </button>
                     </div>
                   ))}
@@ -1430,21 +1786,9 @@ export function AdminPage() {
                     </label>
                     <select
                       value={u.teacherId || ''}
-                      onChange={async (e) => {
-                        await updateDoc(doc(db, 'users', u.uid), {
-                          teacherId: e.target.value,
-                          updatedAt: serverTimestamp(),
-                        });
-                        await logAudit({
-                          actorId: portalUser.uid,
-                          actorEmail: portalUser.email,
-                          action: 'teacher_assigned',
-                          targetType: 'user',
-                          targetId: u.uid,
-                          summary: `Assigned teacher ${e.target.value} to ${u.email}`,
-                        });
-                      }}
-                      className="w-full min-h-[40px] px-2.5 py-1.5 rounded-xl border border-[#084F4E]/20 text-xs bg-white"
+                      disabled={busyKey === `teacher-assign-${u.uid}`}
+                      onChange={(e) => void assignUserTeacher(u, e.target.value)}
+                      className="w-full min-h-[40px] px-2.5 py-1.5 rounded-xl border border-[#084F4E]/20 text-xs bg-white disabled:opacity-50"
                     >
                       <option value="">Unassigned</option>
                       {activeTeachers.map((t) => (
@@ -1468,8 +1812,9 @@ export function AdminPage() {
                           <button
                             key={pl.id}
                             type="button"
+                            disabled={busyKey === `uplan-${u.uid}-${pl.id}`}
                             onClick={() => void toggleUserPlan(u, pl.id)}
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors disabled:opacity-50 ${
                               selected
                                 ? 'bg-[#084F4E] text-white border-[#084F4E]'
                                 : 'bg-white text-[#3F4F4F] border-[#084F4E]/20 hover:bg-[#E6F4F4]'
@@ -1485,24 +1830,15 @@ export function AdminPage() {
 
                 <button
                   type="button"
-                  onClick={async () => {
-                    const nextStatus = u.status === 'suspended' ? 'active' : 'suspended';
-                    await updateDoc(doc(db, 'users', u.uid), {
-                      status: nextStatus,
-                      updatedAt: serverTimestamp(),
-                    });
-                    await logAudit({
-                      actorId: portalUser.uid,
-                      actorEmail: portalUser.email,
-                      action: 'user_status_changed',
-                      targetType: 'user',
-                      targetId: u.uid,
-                      summary: `Set ${u.email} status to ${nextStatus}`,
-                    });
-                  }}
-                  className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[#084F4E]/20 text-xs font-medium text-[#084F4E]"
+                  disabled={busyKey === `status-${u.uid}`}
+                  onClick={() => void toggleUserStatus(u)}
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] disabled:opacity-50"
                 >
-                  {u.status === 'suspended' ? 'Restore account' : 'Suspend account'}
+                  {busyKey === `status-${u.uid}`
+                    ? 'Updating...'
+                    : u.status === 'suspended'
+                      ? 'Restore account'
+                      : 'Suspend account'}
                 </button>
               </div>
             ))}
@@ -1537,8 +1873,9 @@ export function AdminPage() {
                     <td className="p-4">
                       <select
                         value={u.role}
+                        disabled={busyKey === `role-${u.uid}`}
                         onChange={(e) => void changeUserRole(u, e.target.value as UserRole)}
-                        className="px-2.5 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs"
+                        className="px-2.5 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs disabled:opacity-50"
                       >
                         <option value="student">student</option>
                         <option value="teacher">teacher</option>
@@ -1555,21 +1892,9 @@ export function AdminPage() {
                     <td className="p-4">
                       <select
                         value={u.teacherId || ''}
-                        onChange={async (e) => {
-                          await updateDoc(doc(db, 'users', u.uid), {
-                            teacherId: e.target.value,
-                            updatedAt: serverTimestamp(),
-                          });
-                          await logAudit({
-                            actorId: portalUser.uid,
-                            actorEmail: portalUser.email,
-                            action: 'teacher_assigned',
-                            targetType: 'user',
-                            targetId: u.uid,
-                            summary: `Assigned teacher ${e.target.value} to ${u.email}`,
-                          });
-                        }}
-                        className="px-2.5 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs"
+                        disabled={busyKey === `teacher-assign-${u.uid}`}
+                        onChange={(e) => void assignUserTeacher(u, e.target.value)}
+                        className="px-2.5 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs disabled:opacity-50"
                       >
                         <option value="">Unassigned</option>
                         {activeTeachers.map((t) => (
@@ -1590,8 +1915,9 @@ export function AdminPage() {
                               <button
                                 key={pl.id}
                                 type="button"
+                                disabled={busyKey === `uplan-${u.uid}-${pl.id}`}
                                 onClick={() => void toggleUserPlan(u, pl.id)}
-                                className={`px-2 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                                className={`px-2 py-1 rounded-md text-[11px] font-medium border transition-colors disabled:opacity-50 ${
                                   selected
                                     ? 'bg-[#084F4E] text-white border-[#084F4E]'
                                     : 'bg-white text-[#3F4F4F] border-[#084F4E]/20 hover:bg-[#E6F4F4]'
@@ -1607,24 +1933,15 @@ export function AdminPage() {
                     <td className="p-4">
                       <button
                         type="button"
-                        onClick={async () => {
-                          const nextStatus = u.status === 'suspended' ? 'active' : 'suspended';
-                          await updateDoc(doc(db, 'users', u.uid), {
-                            status: nextStatus,
-                            updatedAt: serverTimestamp(),
-                          });
-                          await logAudit({
-                            actorId: portalUser.uid,
-                            actorEmail: portalUser.email,
-                            action: 'user_status_changed',
-                            targetType: 'user',
-                            targetId: u.uid,
-                            summary: `Set ${u.email} status to ${nextStatus}`,
-                          });
-                        }}
-                        className="px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E]"
+                        disabled={busyKey === `status-${u.uid}`}
+                        onClick={() => void toggleUserStatus(u)}
+                        className="px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] disabled:opacity-50"
                       >
-                        {u.status === 'suspended' ? 'Restore' : 'Suspend'}
+                        {busyKey === `status-${u.uid}`
+                          ? '...'
+                          : u.status === 'suspended'
+                            ? 'Restore'
+                            : 'Suspend'}
                       </button>
                     </td>
                   </tr>
@@ -1693,11 +2010,14 @@ export function AdminPage() {
                         <>
                           <button
                             type="button"
+                            disabled={busyKey === `paylink-${inv.id}`}
                             onClick={() => void handleGenerateNewPaymentLink(inv)}
-                            className="inline-flex items-center gap-1 min-h-[36px] px-3 py-1.5 rounded-lg bg-[#084F4E] text-white text-xs font-semibold"
+                            className="inline-flex items-center gap-1 min-h-[36px] px-3 py-1.5 rounded-lg bg-[#084F4E] text-white text-xs font-semibold disabled:opacity-50"
                           >
                             <Link2 className="w-3.5 h-3.5" />
-                            <span>New payment link</span>
+                            <span>
+                              {busyKey === `paylink-${inv.id}` ? 'Generating...' : 'New payment link'}
+                            </span>
                           </button>
                           <button
                             type="button"
@@ -1715,16 +2035,12 @@ export function AdminPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={async () => {
-                              await updateDoc(doc(db, 'portal_invoices', inv.id), {
-                                status: 'void',
-                                updatedAt: serverTimestamp(),
-                              });
-                            }}
-                            className="inline-flex items-center gap-1 min-h-[36px] px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-700"
+                            disabled={busyKey === `void-${inv.id}`}
+                            onClick={() => void voidInvoice(inv)}
+                            className="inline-flex items-center gap-1 min-h-[36px] px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-700 disabled:opacity-50"
                           >
                             <Ban className="w-3.5 h-3.5" />
-                            <span>Void</span>
+                            <span>{busyKey === `void-${inv.id}` ? 'Voiding...' : 'Void'}</span>
                           </button>
                         </>
                       )}
@@ -1764,11 +2080,11 @@ export function AdminPage() {
                       <div className="flex gap-2">
                         <button
                           type="button"
-                          disabled={!invoiceAction.reason.trim()}
+                          disabled={!invoiceAction.reason.trim() || busyKey === `inv-action-${inv.id}`}
                           onClick={() => void submitInvoiceAction(inv)}
                           className="px-4 py-1.5 rounded-xl bg-[#084F4E] text-white text-xs font-semibold disabled:opacity-50"
                         >
-                          Confirm
+                          {busyKey === `inv-action-${inv.id}` ? 'Saving...' : 'Confirm'}
                         </button>
                         <button
                           type="button"
@@ -1827,9 +2143,10 @@ export function AdminPage() {
             </div>
             <button
               type="submit"
-              className="w-full sm:w-auto min-h-[42px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold"
+              disabled={busyKey === 'create-coupon'}
+              className="w-full sm:w-auto min-h-[42px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold disabled:opacity-50"
             >
-              Save coupon
+              {busyKey === 'create-coupon' ? 'Saving...' : 'Save coupon'}
             </button>
           </form>
 
@@ -1849,13 +2166,9 @@ export function AdminPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() =>
-                    void updateDoc(doc(db, 'portal_coupons', c.code), {
-                      active: !c.active,
-                      updatedAt: serverTimestamp(),
-                    })
-                  }
-                  className="px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E]"
+                  disabled={busyKey === `coupon-${c.code}`}
+                  onClick={() => void toggleCouponActive(c)}
+                  className="px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] disabled:opacity-50"
                 >
                   {c.active ? 'Active (Pause)' : 'Inactive (Enable)'}
                 </button>
@@ -1932,9 +2245,10 @@ export function AdminPage() {
             </label>
             <button
               type="submit"
-              className="w-full sm:w-auto min-h-[42px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold"
+              disabled={busyKey === 'create-plan'}
+              className="w-full sm:w-auto min-h-[42px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold disabled:opacity-50"
             >
-              Create plan
+              {busyKey === 'create-plan' ? 'Creating...' : 'Create plan'}
             </button>
           </form>
 
@@ -1961,13 +2275,9 @@ export function AdminPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() =>
-                    void updateDoc(doc(db, 'portal_plans', pl.id), {
-                      active: !pl.active,
-                      updatedAt: serverTimestamp(),
-                    })
-                  }
-                  className="self-start px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] shrink-0"
+                  disabled={busyKey === `plan-${pl.id}`}
+                  onClick={() => void togglePlanActive(pl)}
+                  className="self-start px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] shrink-0 disabled:opacity-50"
                 >
                   {pl.active ? 'Active' : 'Archived'}
                 </button>
@@ -2074,9 +2384,10 @@ export function AdminPage() {
             />
             <button
               type="submit"
-              className="w-full sm:w-auto min-h-[42px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold"
+              disabled={busyKey === 'create-announcement'}
+              className="w-full sm:w-auto min-h-[42px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold disabled:opacity-50"
             >
-              Publish announcement
+              {busyKey === 'create-announcement' ? 'Publishing...' : 'Publish announcement'}
             </button>
           </form>
 

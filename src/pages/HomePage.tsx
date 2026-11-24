@@ -3,11 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { doc, getDoc } from 'firebase/firestore';
 import { Check, ArrowRight, Users, User } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, formatPortalError } from '../lib/firebase';
 import { fetchPublicPlans } from '../lib/seed';
 import { apiFetch } from '../lib/api';
 import { createEnrolmentInvoice } from '../lib/portalActions';
 import { savePendingEnrolment, useAuth } from '../contexts/AuthContext';
+import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import {
   calculateEnrolmentQuote,
   formatMoney,
@@ -38,7 +39,7 @@ export function HomePage() {
     quote: PriceQuote;
   } | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
 
   const selectedPlan: PortalPlan | undefined =
     plans.find((p) => p.id === selectedPlanId) || plans[0];
@@ -139,7 +140,7 @@ export function HomePage() {
 
   async function handleProceed() {
     if (!selectedPlan || !quote) return;
-    setError(null);
+    setFeedback(null);
     setSubmitting(true);
 
     try {
@@ -157,10 +158,15 @@ export function HomePage() {
         if (signedInProfile) {
           const pendingStillQueued = sessionStorage.getItem('ijwi_pending_enrolment');
           if (!pendingStillQueued) {
+            setFeedback({
+              type: 'success',
+              text: 'Invoice created! Opening your invoice...',
+            });
             return;
           }
+        } else {
+          return;
         }
-        return;
       }
 
       const activeUser =
@@ -185,9 +191,16 @@ export function HomePage() {
         couponCode: appliedCoupon?.code,
         quote,
       });
+      setFeedback({
+        type: 'success',
+        text: 'Invoice created! Redirecting to payment...',
+      });
       navigate(`/invoices/${invoiceId}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to start enrolment.');
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to start enrolment. Please try again.'),
+      });
     } finally {
       setSubmitting(false);
     }
@@ -540,11 +553,10 @@ export function HomePage() {
                       </div>
                     )}
 
-                    {error && (
-                      <div className="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-xs text-red-800">
-                        {error}
-                      </div>
-                    )}
+                    <FeedbackBanner
+                      feedback={feedback}
+                      onDismiss={() => setFeedback(null)}
+                    />
 
                     <button
                       type="button"
@@ -574,27 +586,36 @@ export function HomePage() {
 
       {/* Mobile sticky summary bar */}
       {selectedPlan && quote && (
-        <div className="lg:hidden fixed bottom-0 inset-x-0 z-30 border-t border-[#084F4E]/15 bg-white/95 backdrop-blur px-4 py-3 flex items-center justify-between gap-3 shadow-lg">
-          <div className="min-w-0">
-            <p className="text-[11px] text-[#3F4F4F] truncate">
-              {quote.seats} {quote.seats === 1 ? 'person' : 'people'} · {selectedPlan.name}
-            </p>
-            <p className="font-display text-xl font-semibold text-[#084F4E] tabular-nums">
-              {formatMoney(quote.totalCents, quote.currency)}
-            </p>
+        <div className="lg:hidden fixed bottom-0 inset-x-0 z-30 border-t border-[#084F4E]/15 bg-white/95 backdrop-blur px-4 py-3 shadow-lg space-y-2">
+          {feedback && (
+            <FeedbackBanner
+              feedback={feedback}
+              onDismiss={() => setFeedback(null)}
+              className="!py-2 !px-3 !text-xs"
+            />
+          )}
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] text-[#3F4F4F] truncate">
+                {quote.seats} {quote.seats === 1 ? 'person' : 'people'} · {selectedPlan.name}
+              </p>
+              <p className="font-display text-xl font-semibold text-[#084F4E] tabular-nums">
+                {formatMoney(quote.totalCents, quote.currency)}
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => void handleProceed()}
+              className="min-h-[42px] px-4 py-2.5 rounded-xl bg-[#084F4E] text-white text-xs font-semibold hover:bg-[#0E7C7B] whitespace-nowrap shrink-0 disabled:opacity-60"
+            >
+              {submitting
+                ? 'Creating...'
+                : portalUser || firebaseUser
+                  ? 'Create invoice'
+                  : 'Continue with Google'}
+            </button>
           </div>
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={() => void handleProceed()}
-            className="min-h-[42px] px-4 py-2.5 rounded-xl bg-[#084F4E] text-white text-xs font-semibold hover:bg-[#0E7C7B] whitespace-nowrap shrink-0 disabled:opacity-60"
-          >
-            {submitting
-              ? 'Creating...'
-              : portalUser || firebaseUser
-                ? 'Create invoice'
-                : 'Continue with Google'}
-          </button>
         </div>
       )}
     </div>

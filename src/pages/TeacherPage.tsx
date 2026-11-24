@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   collection,
@@ -13,11 +13,12 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import { Upload, CheckCircle2, Trash2, Calendar, Award, BookOpen, Plus } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { apiFetch } from '../lib/api';
 import { DEFAULT_WEEKLY_AVAILABILITY } from '../lib/seed';
 import { dispatchPortalEmail, pushNotification } from '../lib/portalActions';
+import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import type {
   LearningLevel,
   PortalBooking,
@@ -67,7 +68,8 @@ export function TeacherPage() {
   const [plans, setPlans] = useState<PortalPlan[]>([]);
   const [resources, setResources] = useState<PortalResource[]>([]);
   const [feedbackDrafts, setFeedbackDrafts] = useState<Record<string, string>>({});
-  const [message, setMessage] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
 
   // Availability form state
   const [newDay, setNewDay] = useState(1);
@@ -83,8 +85,10 @@ export function TeacherPage() {
   const [planPublicEnrol, setPlanPublicEnrol] = useState(true);
   const [planLevels, setPlanLevels] = useState<LearningLevel[]>(createBlankLevels);
   const [savingPlan, setSavingPlan] = useState(false);
+  const [planFeedback, setPlanFeedback] = useState<FeedbackState | null>(null);
 
   // Resource upload form state
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [resTitle, setResTitle] = useState('');
   const [resType, setResType] = useState<'pdf' | 'video' | 'link'>('pdf');
   const [resLevel, setResLevel] = useState('Level 1');
@@ -95,6 +99,7 @@ export function TeacherPage() {
   const [resPublicToPaid, setResPublicToPaid] = useState(true);
   const [resPlanIds, setResPlanIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadFeedback, setUploadFeedback] = useState<FeedbackState | null>(null);
 
   // Load dynamic teachers list so admins can view any teacher and teachers see their own record
   useEffect(() => {
@@ -103,11 +108,17 @@ export function TeacherPage() {
       setSelectedTeacherUid(portalUser.uid);
       return;
     }
-    const unsubT = onSnapshot(collection(db, 'portal_teachers'), (snap) => {
-      const list = snap.docs.map((d) => d.data() as TeacherProfile);
-      setAllTeachers(list);
-      setSelectedTeacherUid((prev) => prev || list[0]?.uid || '');
-    });
+    const unsubT = onSnapshot(
+      collection(db, 'portal_teachers'),
+      (snap) => {
+        const list = snap.docs.map((d) => d.data() as TeacherProfile);
+        setAllTeachers(list);
+        setSelectedTeacherUid((prev) => prev || list[0]?.uid || '');
+      },
+      (err) => {
+        setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to load teachers.') });
+      }
+    );
     return () => unsubT();
   }, [portalUser]);
 
@@ -118,20 +129,35 @@ export function TeacherPage() {
   useEffect(() => {
     if (!portalUser) return;
 
-    const unsubPlans = onSnapshot(collection(db, 'portal_plans'), (snap) => {
-      setPlans(snap.docs.map((d) => ({ ...(d.data() as PortalPlan), id: d.id })));
-    });
+    const unsubPlans = onSnapshot(
+      collection(db, 'portal_plans'),
+      (snap) => {
+        setPlans(snap.docs.map((d) => ({ ...(d.data() as PortalPlan), id: d.id })));
+      },
+      (err) => {
+        setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to load learning plans.') });
+      }
+    );
 
-    const unsubTeams = onSnapshot(collection(db, 'portal_teams'), (snap) => {
-      setTeams(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalTeam, 'id'>) })));
-    });
+    const unsubTeams = onSnapshot(
+      collection(db, 'portal_teams'),
+      (snap) => {
+        setTeams(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalTeam, 'id'>) })));
+      },
+      (err) => {
+        setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to load teams.') });
+      }
+    );
 
     const unsubR = onSnapshot(
       query(collection(db, 'portal_resources'), where('uploaderId', '==', portalUser.uid)),
       (snap) =>
         setResources(
           snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalResource, 'id'>) }))
-        )
+        ),
+      (err) => {
+        setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to load resources.') });
+      }
     );
 
     if (!activeTeacherUid) {
@@ -145,33 +171,37 @@ export function TeacherPage() {
       };
     }
 
-    getDoc(doc(db, 'portal_teachers', activeTeacherUid)).then(async (snap) => {
-      if (snap.exists()) {
-        setTeacherProfile(snap.data() as TeacherProfile);
-      } else if (portalUser.role === 'teacher' && activeTeacherUid === portalUser.uid) {
-        const starter: TeacherProfile = {
-          uid: portalUser.uid,
-          email: portalUser.email,
-          displayName: portalUser.displayName,
-          photoUrl: portalUser.photoUrl || '',
-          bio: 'Kinyarwanda teacher at Ijwi.',
-          availability: DEFAULT_WEEKLY_AVAILABILITY,
-          daysOff: [],
-          lessonLengthMin: 45,
-          bufferMin: 15,
-          maxPerDay: 6,
-          active: true,
-        };
-        await setDoc(doc(db, 'portal_teachers', portalUser.uid), {
-          ...starter,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }).catch(() => {});
-        setTeacherProfile(starter);
-      } else {
-        setTeacherProfile(null);
-      }
-    });
+    getDoc(doc(db, 'portal_teachers', activeTeacherUid))
+      .then(async (snap) => {
+        if (snap.exists()) {
+          setTeacherProfile(snap.data() as TeacherProfile);
+        } else if (portalUser.role === 'teacher' && activeTeacherUid === portalUser.uid) {
+          const starter: TeacherProfile = {
+            uid: portalUser.uid,
+            email: portalUser.email,
+            displayName: portalUser.displayName,
+            photoUrl: portalUser.photoUrl || '',
+            bio: 'Kinyarwanda teacher at Ijwi.',
+            availability: DEFAULT_WEEKLY_AVAILABILITY,
+            daysOff: [],
+            lessonLengthMin: 45,
+            bufferMin: 15,
+            maxPerDay: 6,
+            active: true,
+          };
+          await setDoc(doc(db, 'portal_teachers', portalUser.uid), {
+            ...starter,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }).catch(() => {});
+          setTeacherProfile(starter);
+        } else {
+          setTeacherProfile(null);
+        }
+      })
+      .catch((err) => {
+        setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to load teacher profile.') });
+      });
 
     const unsubB = onSnapshot(
       query(collection(db, 'portal_bookings'), where('teacherId', '==', activeTeacherUid)),
@@ -181,12 +211,18 @@ export function TeacherPage() {
             .map((d) => ({ id: d.id, ...(d.data() as Omit<PortalBooking, 'id'>) }))
             .sort((a, b) => Date.parse(a.startUtc) - Date.parse(b.startUtc))
         );
+      },
+      (err) => {
+        setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to load bookings.') });
       }
     );
 
     const unsubS = onSnapshot(
       query(collection(db, 'users'), where('teacherId', '==', activeTeacherUid)),
-      (snap) => setStudents(snap.docs.map((d) => d.data() as PortalUser))
+      (snap) => setStudents(snap.docs.map((d) => d.data() as PortalUser)),
+      (err) => {
+        setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to load students.') });
+      }
     );
 
     return () => {
@@ -223,59 +259,86 @@ export function TeacherPage() {
     b: PortalBooking,
     status: 'completed' | 'no_show'
   ) {
-    const feedback = (feedbackDrafts[b.id] || '').trim();
-    await updateDoc(doc(db, 'portal_bookings', b.id), {
-      status,
-      ...(feedback ? { teacherFeedback: feedback } : {}),
-      updatedAt: serverTimestamp(),
-    });
+    setBusyKey(`booking:${b.id}`);
+    setFeedback(null);
+    try {
+      const feedbackNote = (feedbackDrafts[b.id] || '').trim();
+      await updateDoc(doc(db, 'portal_bookings', b.id), {
+        status,
+        ...(feedbackNote ? { teacherFeedback: feedbackNote } : {}),
+        updatedAt: serverTimestamp(),
+      });
 
-    if (b.teacherId) {
-      await setDoc(
-        doc(db, 'portal_teachers', b.teacherId, 'busySlots', b.id),
-        {
-          startUtc: b.startUtc,
-          endUtc: b.endUtc,
-          status,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      ).catch(() => {});
-    }
+      if (b.teacherId) {
+        await setDoc(
+          doc(db, 'portal_teachers', b.teacherId, 'busySlots', b.id),
+          {
+            startUtc: b.startUtc,
+            endUtc: b.endUtc,
+            status,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        ).catch(() => {});
+      }
 
-    if (status === 'no_show') {
-      const stuSnap = await getDoc(doc(db, 'users', b.studentId));
-      if (stuSnap.exists()) {
-        await updateDoc(doc(db, 'users', b.studentId), {
-          noShowCount: Number(stuSnap.data().noShowCount || 0) + 1,
-          updatedAt: serverTimestamp(),
+      if (status === 'no_show') {
+        const stuSnap = await getDoc(doc(db, 'users', b.studentId));
+        if (stuSnap.exists()) {
+          await updateDoc(doc(db, 'users', b.studentId), {
+            noShowCount: Number(stuSnap.data().noShowCount || 0) + 1,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+
+      if (feedbackNote) {
+        void pushNotification({
+          userId: b.studentId,
+          title: `Feedback from ${b.teacherName}`,
+          body: feedbackNote.slice(0, 140),
+          type: 'feedback',
+          link: '/progress',
         });
       }
-    }
-
-    if (feedback) {
-      await pushNotification({
-        userId: b.studentId,
-        title: `Feedback from ${b.teacherName}`,
-        body: feedback.slice(0, 140),
-        type: 'feedback',
-        link: '/progress',
+      setFeedback({
+        type: 'success',
+        text: `Marked lesson with ${b.studentName} as ${status.replace('_', ' ')}.`,
       });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update lesson status.'),
+      });
+    } finally {
+      setBusyKey(null);
     }
-    setMessage(`Marked lesson with ${b.studentName} as ${status.replace('_', ' ')}.`);
   }
 
   async function saveAvailabilityProfile(next: TeacherProfile) {
+    const previous = teacherProfile;
     setTeacherProfile(next);
-    await setDoc(
-      doc(db, 'portal_teachers', next.uid),
-      {
-        ...next,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-    setMessage('Availability updated.');
+    setBusyKey('availability');
+    setFeedback(null);
+    try {
+      await setDoc(
+        doc(db, 'portal_teachers', next.uid),
+        {
+          ...next,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      setFeedback({ type: 'success', text: 'Availability updated.' });
+    } catch (err) {
+      if (previous) setTeacherProfile(previous);
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to save availability.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function handleCreatePlan(e: React.FormEvent) {
@@ -298,15 +361,18 @@ export function TeacherPage() {
       }));
 
     if (cleanLevels.length === 0) {
-      setMessage('Add at least one module with a title.');
+      const msg = 'Add at least one module with a title.';
+      setPlanFeedback({ type: 'error', text: msg });
+      setFeedback({ type: 'error', text: msg });
       return;
     }
 
     setSavingPlan(true);
-    setMessage(null);
+    setFeedback(null);
+    setPlanFeedback(null);
     try {
-      const slug = planName
-        .trim()
+      const savedName = planName.trim();
+      const slug = savedName
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/(^-|-$)/g, '')
@@ -317,7 +383,7 @@ export function TeacherPage() {
 
       await setDoc(doc(db, 'portal_plans', id), {
         id,
-        name: planName.trim(),
+        name: savedName,
         objective: planObjective.trim(),
         description:
           planDescription.trim() ||
@@ -344,71 +410,132 @@ export function TeacherPage() {
       setPlanObjective('');
       setPlanDescription('');
       setPlanLevels(createBlankLevels());
-      setMessage(`Learning plan "${planName.trim()}" created! You can now apply it to learners or teams.`);
+      const successText = `Learning plan "${savedName}" published! You can now apply it to learners or teams.`;
+      setPlanFeedback({ type: 'success', text: successText });
+      setFeedback({ type: 'success', text: successText });
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Unable to save learning plan.');
+      const errText = formatPortalError(err, 'Unable to save learning plan.');
+      setPlanFeedback({ type: 'error', text: errText });
+      setFeedback({ type: 'error', text: errText });
     } finally {
       setSavingPlan(false);
     }
   }
 
-  async function toggleStudentPlan(student: PortalUser, targetPlanId: string) {
-    const current = student.assignedPlanIds || [];
-    const next = current.includes(targetPlanId)
-      ? current.filter((id) => id !== targetPlanId)
-      : [...current, targetPlanId];
+  async function togglePlanActive(pl: PortalPlan) {
+    setBusyKey(`plan-active:${pl.id}`);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'portal_plans', pl.id), {
+        active: !pl.active,
+        updatedAt: serverTimestamp(),
+      });
+      setFeedback({
+        type: 'success',
+        text: pl.active ? `Archived "${pl.name}".` : `Activated "${pl.name}".`,
+      });
+    } catch (err) {
+      setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to update plan status.') });
+    } finally {
+      setBusyKey(null);
+    }
+  }
 
-    await updateDoc(doc(db, 'users', student.uid), {
-      assignedPlanIds: next,
-      updatedAt: serverTimestamp(),
-    });
-    const planLabel = plans.find((p) => p.id === targetPlanId)?.name || targetPlanId;
-    setMessage(
-      next.includes(targetPlanId)
-        ? `Applied "${planLabel}" to ${student.displayName}.`
-        : `Removed "${planLabel}" from ${student.displayName}.`
-    );
+  async function toggleStudentPlan(student: PortalUser, targetPlanId: string) {
+    setBusyKey(`stu-plan:${student.uid}:${targetPlanId}`);
+    setFeedback(null);
+    try {
+      const current = student.assignedPlanIds || [];
+      const next = current.includes(targetPlanId)
+        ? current.filter((id) => id !== targetPlanId)
+        : [...current, targetPlanId];
+
+      await updateDoc(doc(db, 'users', student.uid), {
+        assignedPlanIds: next,
+        updatedAt: serverTimestamp(),
+      });
+      const planLabel = plans.find((p) => p.id === targetPlanId)?.name || targetPlanId;
+      setFeedback({
+        type: 'success',
+        text: next.includes(targetPlanId)
+          ? `Applied "${planLabel}" to ${student.displayName}.`
+          : `Removed "${planLabel}" from ${student.displayName}.`,
+      });
+    } catch (err) {
+      setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to update student plans.') });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function toggleTeamPlan(team: PortalTeam, targetPlanId: string) {
-    const current = team.assignedPlanIds || (team.planId ? [team.planId] : []);
-    const next = current.includes(targetPlanId)
-      ? current.filter((id) => id !== targetPlanId)
-      : [...current, targetPlanId];
+    setBusyKey(`team-plan:${team.id}:${targetPlanId}`);
+    setFeedback(null);
+    try {
+      const current = team.assignedPlanIds || (team.planId ? [team.planId] : []);
+      const next = current.includes(targetPlanId)
+        ? current.filter((id) => id !== targetPlanId)
+        : [...current, targetPlanId];
 
-    await updateDoc(doc(db, 'portal_teams', team.id), {
-      assignedPlanIds: next,
-      updatedAt: serverTimestamp(),
-    });
-    const planLabel = plans.find((p) => p.id === targetPlanId)?.name || targetPlanId;
-    setMessage(
-      next.includes(targetPlanId)
-        ? `Applied "${planLabel}" to team ${team.name}.`
-        : `Removed "${planLabel}" from team ${team.name}.`
-    );
+      await updateDoc(doc(db, 'portal_teams', team.id), {
+        assignedPlanIds: next,
+        updatedAt: serverTimestamp(),
+      });
+      const planLabel = plans.find((p) => p.id === targetPlanId)?.name || targetPlanId;
+      setFeedback({
+        type: 'success',
+        text: next.includes(targetPlanId)
+          ? `Applied "${planLabel}" to team ${team.name}.`
+          : `Removed "${planLabel}" from team ${team.name}.`,
+      });
+    } catch (err) {
+      setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to update team plans.') });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function handleUploadResource(e: React.FormEvent) {
     e.preventDefault();
     if (!portalUser || !resTitle.trim()) return;
+    setUploadFeedback(null);
+    setFeedback(null);
+
+    if (resType === 'link' && !resUrl.trim()) {
+      const msg = 'Please enter a valid external URL.';
+      setUploadFeedback({ type: 'error', text: msg });
+      setFeedback({ type: 'error', text: msg });
+      return;
+    }
+
+    if (resType !== 'link') {
+      if (!resFile) {
+        const msg = 'Please choose a PDF, MP4, or WebM file.';
+        setUploadFeedback({ type: 'error', text: msg });
+        setFeedback({ type: 'error', text: msg });
+        return;
+      }
+      if (resFile.size > 60 * 1024 * 1024) {
+        const msg = 'File size exceeds the 60 MB limit. Please choose a smaller file.';
+        setUploadFeedback({ type: 'error', text: msg });
+        setFeedback({ type: 'error', text: msg });
+        return;
+      }
+    }
+
     setUploading(true);
-    setMessage(null);
     try {
       let fileKey = '';
-      if (resType !== 'link') {
-        if (!resFile) {
-          setMessage('Please choose a PDF or MP4 file.');
-          setUploading(false);
-          return;
-        }
+      if (resType !== 'link' && resFile) {
         const base64Data = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(String(reader.result));
-          reader.onerror = () => reject(new Error('Failed to read file'));
+          reader.onerror = () => reject(new Error('Failed to read the selected file.'));
           reader.readAsDataURL(resFile);
         });
         const uploaded = await apiFetch<{ fileKey: string }>('/api/resources/upload', {
           method: 'POST',
+          timeoutMs: 60_000,
           body: JSON.stringify({
             filename: resFile.name,
             mimeType: resFile.type || (resType === 'pdf' ? 'application/pdf' : 'video/mp4'),
@@ -418,10 +545,11 @@ export function TeacherPage() {
         fileKey = uploaded.fileKey;
       }
 
+      const savedTitle = resTitle.trim();
       const id = `res-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       await setDoc(doc(db, 'portal_resources', id), {
         type: resType,
-        title: resTitle.trim(),
+        title: savedTitle,
         ...(resDesc.trim() ? { description: resDesc.trim() } : {}),
         ...(fileKey ? { fileKey } : {}),
         ...(resType === 'link' && resUrl.trim() ? { url: resUrl.trim() } : {}),
@@ -439,23 +567,38 @@ export function TeacherPage() {
       setResDesc('');
       setResUrl('');
       setResFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
       setResPlanIds([]);
-      setMessage('Resource published.');
+      const successText = `Resource "${savedTitle}" published to your study library!`;
+      setUploadFeedback({ type: 'success', text: successText });
+      setFeedback({ type: 'success', text: successText });
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Upload failed.');
+      const errText = formatPortalError(err, 'Resource upload failed. Please try again.');
+      setUploadFeedback({ type: 'error', text: errText });
+      setFeedback({ type: 'error', text: errText });
     } finally {
       setUploading(false);
     }
   }
 
   async function handleDeleteResource(r: PortalResource) {
-    if (r.fileKey) {
-      await apiFetch(`/api/resources/file/${encodeURIComponent(r.fileKey)}`, {
-        method: 'DELETE',
-      }).catch(() => {});
+    setBusyKey(`del-res:${r.id}`);
+    setFeedback(null);
+    try {
+      if (r.fileKey) {
+        await apiFetch(`/api/resources/file/${encodeURIComponent(r.fileKey)}`, {
+          method: 'DELETE',
+        }).catch(() => {});
+      }
+      await deleteDoc(doc(db, 'portal_resources', r.id));
+      setFeedback({ type: 'success', text: `Deleted resource "${r.title}".` });
+    } catch (err) {
+      setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to delete resource.') });
+    } finally {
+      setBusyKey(null);
     }
-    await deleteDoc(doc(db, 'portal_resources', r.id));
-    setMessage(`Deleted resource "${r.title}".`);
   }
 
   async function issueCertificateForStudent(
@@ -463,30 +606,41 @@ export function TeacherPage() {
     levelTitle: string,
     planTitle: string
   ) {
-    const certCode = `IJW-${stu.uid.slice(0, 4).toUpperCase()}-${Date.now()
-      .toString(36)
-      .toUpperCase()}`;
-    await setDoc(doc(db, 'portal_certificates', certCode), {
-      certCode,
-      userId: stu.uid,
-      learnerName: stu.displayName,
-      levelName: levelTitle,
-      planName: planTitle,
-      issuedAt: new Date().toISOString(),
-      createdAt: serverTimestamp(),
-    });
-    await dispatchPortalEmail({
-      userId: stu.uid,
-      to: stu.email,
-      recipientName: stu.displayName,
-      type: 'certificate',
-      subject: `Congratulations! Your Ijwi ${levelTitle} certificate`,
-      headline: `You completed ${levelTitle}`,
-      bodyText: `Your teacher ${portalUser?.displayName} issued your verified completion certificate for ${planTitle}.`,
-      ctaLabel: 'View Certificate',
-      ctaUrl: `/verify/${certCode}`,
-    });
-    setMessage(`Certificate ${certCode} issued to ${stu.displayName}.`);
+    setBusyKey(`cert:${stu.uid}:${levelTitle}`);
+    setFeedback(null);
+    try {
+      const certCode = `IJW-${stu.uid.slice(0, 4).toUpperCase()}-${Date.now()
+        .toString(36)
+        .toUpperCase()}`;
+      await setDoc(doc(db, 'portal_certificates', certCode), {
+        certCode,
+        userId: stu.uid,
+        learnerName: stu.displayName,
+        levelName: levelTitle,
+        planName: planTitle,
+        issuedAt: new Date().toISOString(),
+        createdAt: serverTimestamp(),
+      });
+      void dispatchPortalEmail({
+        userId: stu.uid,
+        to: stu.email,
+        recipientName: stu.displayName,
+        type: 'certificate',
+        subject: `Congratulations! Your Ijwi ${levelTitle} certificate`,
+        headline: `You completed ${levelTitle}`,
+        bodyText: `Your teacher ${portalUser?.displayName} issued your verified completion certificate for ${planTitle}.`,
+        ctaLabel: 'View Certificate',
+        ctaUrl: `/verify/${certCode}`,
+      });
+      setFeedback({
+        type: 'success',
+        text: `Certificate ${certCode} issued to ${stu.displayName}.`,
+      });
+    } catch (err) {
+      setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to issue certificate.') });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   return (
@@ -545,11 +699,7 @@ export function TeacherPage() {
         </div>
       </div>
 
-      {message && (
-        <div className="rounded-2xl border border-[#0E7C7B]/25 bg-[#E6F4F4] px-5 py-3 text-sm text-[#084F4E]">
-          {message}
-        </div>
-      )}
+      <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
 
       {tab === 'today' && (
         <section className="space-y-4">
@@ -593,16 +743,18 @@ export function TeacherPage() {
                       <div className="flex flex-col sm:flex-row gap-2">
                         <button
                           type="button"
+                          disabled={busyKey === `booking:${b.id}`}
                           onClick={() => void markAttendance(b, 'completed')}
-                          className="w-full sm:w-auto inline-flex items-center justify-center gap-1 min-h-[40px] px-4 py-2 rounded-xl bg-[#084F4E] text-white text-xs font-semibold"
+                          className="w-full sm:w-auto inline-flex items-center justify-center gap-1 min-h-[40px] px-4 py-2 rounded-xl bg-[#084F4E] text-white text-xs font-semibold disabled:opacity-60"
                         >
                           <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Mark completed</span>
+                          <span>{busyKey === `booking:${b.id}` ? 'Saving...' : 'Mark completed'}</span>
                         </button>
                         <button
                           type="button"
+                          disabled={busyKey === `booking:${b.id}`}
                           onClick={() => void markAttendance(b, 'no_show')}
-                          className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl border border-amber-300 text-xs font-medium text-amber-800"
+                          className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl border border-amber-300 text-xs font-medium text-amber-800 disabled:opacity-60"
                         >
                           No-show
                         </button>
@@ -862,6 +1014,11 @@ export function TeacherPage() {
               ))}
             </div>
 
+            <FeedbackBanner
+              feedback={planFeedback}
+              onDismiss={() => setPlanFeedback(null)}
+            />
+
             <button
               type="submit"
               disabled={savingPlan}
@@ -897,15 +1054,15 @@ export function TeacherPage() {
                     </div>
                     <button
                       type="button"
-                      onClick={() =>
-                        void updateDoc(doc(db, 'portal_plans', pl.id), {
-                          active: !pl.active,
-                          updatedAt: serverTimestamp(),
-                        })
-                      }
-                      className="px-3 py-1 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E]"
+                      disabled={busyKey === `plan-active:${pl.id}`}
+                      onClick={() => void togglePlanActive(pl)}
+                      className="px-3 py-1 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] disabled:opacity-60"
                     >
-                      {pl.active ? 'Active' : 'Archived'}
+                      {busyKey === `plan-active:${pl.id}`
+                        ? 'Saving...'
+                        : pl.active
+                          ? 'Active'
+                          : 'Archived'}
                     </button>
                   </div>
 
@@ -1233,7 +1390,7 @@ export function TeacherPage() {
               Upload private resource
             </h2>
             <p className="text-xs text-[#3F4F4F]">
-              Uploaded PDFs and videos are never given public URLs and stream only inside the portal.
+              Uploaded PDFs and videos are never given public URLs and stream only inside the portal (max 60 MB; keep under 4 MB on serverless deployments).
             </p>
             <input
               required
@@ -1245,7 +1402,12 @@ export function TeacherPage() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <select
                 value={resType}
-                onChange={(e) => setResType(e.target.value as 'pdf' | 'video' | 'link')}
+                onChange={(e) => {
+                  setResType(e.target.value as 'pdf' | 'video' | 'link');
+                  setResFile(null);
+                  if (fileInputRef.current) fileInputRef.current.value = '';
+                  setUploadFeedback(null);
+                }}
                 className="min-h-[40px] px-3 py-2 rounded-xl border border-[#084F4E]/20 text-xs bg-white"
               >
                 <option value="pdf">PDF (Canvas)</option>
@@ -1276,12 +1438,23 @@ export function TeacherPage() {
                 className="w-full px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
               />
             ) : (
-              <input
-                type="file"
-                accept={resType === 'pdf' ? 'application/pdf' : 'video/mp4,video/webm'}
-                onChange={(e) => setResFile(e.target.files?.[0] || null)}
-                className="w-full text-xs"
-              />
+              <div className="space-y-1.5">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={resType === 'pdf' ? 'application/pdf' : 'video/mp4,video/webm'}
+                  onChange={(e) => {
+                    setResFile(e.target.files?.[0] || null);
+                    setUploadFeedback(null);
+                  }}
+                  className="w-full text-xs"
+                />
+                {resFile && (
+                  <p className="text-[11px] text-[#0E7C7B] tabular-nums">
+                    Selected: {resFile.name} ({(resFile.size / (1024 * 1024)).toFixed(2)} MB)
+                  </p>
+                )}
+              </div>
             )}
 
             <textarea
@@ -1338,49 +1511,71 @@ export function TeacherPage() {
               </label>
             </div>
 
+            <FeedbackBanner
+              feedback={uploadFeedback}
+              onDismiss={() => setUploadFeedback(null)}
+              action={
+                uploadFeedback?.type === 'success' ? (
+                  <Link
+                    to="/resources"
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-[#084F4E] underline"
+                  >
+                    Open Study Resources
+                  </Link>
+                ) : undefined
+              }
+            />
+
             <button
               type="submit"
               disabled={uploading}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold"
+              className="w-full sm:w-auto min-h-[42px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] disabled:opacity-60"
             >
               <Upload className="w-4 h-4" />
-              <span>{uploading ? 'Uploading...' : 'Publish resource'}</span>
+              <span>{uploading ? 'Uploading resource...' : 'Publish resource'}</span>
             </button>
           </form>
 
           <div className="lg:col-span-6 space-y-3">
-            <h2 className="font-display text-xl font-semibold text-[#084F4E]">My uploads</h2>
-            {resources.map((r) => {
-              const linkedNames = (r.planIds || [])
-                .map((pid) => plans.find((p) => p.id === pid)?.name || pid)
-                .join(', ');
-              return (
-                <div
-                  key={r.id}
-                  className="rounded-2xl border border-[#084F4E]/12 bg-white p-4 flex items-center justify-between gap-3"
-                >
-                  <div>
-                    <p className="font-semibold text-sm text-[#084F4E]">{r.title}</p>
-                    <p className="text-xs text-[#3F4F4F]">
-                      {r.type.toUpperCase()} · {r.level} · {r.topic}
-                    </p>
-                    {linkedNames && (
-                      <p className="text-[11px] text-[#0E7C7B] mt-0.5">
-                        Applied to: {linkedNames}
-                      </p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleDeleteResource(r)}
-                    className="p-2 rounded-lg text-red-700 hover:bg-red-50"
-                    aria-label="Delete resource"
+            <h2 className="font-display text-xl font-semibold text-[#084F4E]">My uploads ({resources.length})</h2>
+            {resources.length === 0 ? (
+              <div className="rounded-2xl border border-[#084F4E]/12 bg-[#FAFBFB] p-6 text-sm text-[#3F4F4F]">
+                No resources uploaded yet.
+              </div>
+            ) : (
+              resources.map((r) => {
+                const linkedNames = (r.planIds || [])
+                  .map((pid) => plans.find((p) => p.id === pid)?.name || pid)
+                  .join(', ');
+                return (
+                  <div
+                    key={r.id}
+                    className="rounded-2xl border border-[#084F4E]/12 bg-white p-4 flex items-center justify-between gap-3"
                   >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              );
-            })}
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm text-[#084F4E] truncate">{r.title}</p>
+                      <p className="text-xs text-[#3F4F4F]">
+                        {r.type.toUpperCase()} · {r.level} · {r.topic}
+                      </p>
+                      {linkedNames && (
+                        <p className="text-[11px] text-[#0E7C7B] mt-0.5">
+                          Applied to: {linkedNames}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={busyKey === `del-res:${r.id}`}
+                      onClick={() => void handleDeleteResource(r)}
+                      className="p-2 rounded-lg text-red-700 hover:bg-red-50 disabled:opacity-50 shrink-0"
+                      aria-label="Delete resource"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       )}

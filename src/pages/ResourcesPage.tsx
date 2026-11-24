@@ -10,9 +10,10 @@ import {
   where,
 } from 'firebase/firestore';
 import { FileText, Video, ExternalLink, Search } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchAllActivePlans } from '../lib/seed';
+import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import { ProtectedPdfViewer } from '../components/ProtectedPdfViewer';
 import { ProtectedVideoPlayer } from '../components/ProtectedVideoPlayer';
 import type { PortalPlan, PortalResource, PortalTeam } from '../types/portal';
@@ -22,6 +23,8 @@ export function ResourcesPage() {
   const viewerRef = useRef<HTMLDivElement>(null);
   const [publicResources, setPublicResources] = useState<PortalResource[]>([]);
   const [planResources, setPlanResources] = useState<PortalResource[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const [plans, setPlans] = useState<PortalPlan[]>([]);
   const [team, setTeam] = useState<PortalTeam | null>(null);
   const [search, setSearch] = useState('');
@@ -31,22 +34,38 @@ export function ResourcesPage() {
 
   useEffect(() => {
     if (!portalUser) return;
+    setLoading(true);
     void fetchAllActivePlans().then(setPlans);
 
     if (portalUser.teamId) {
-      getDoc(doc(db, 'portal_teams', portalUser.teamId)).then((snap) => {
-        if (snap.exists()) setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
-      });
+      getDoc(doc(db, 'portal_teams', portalUser.teamId))
+        .then((snap) => {
+          if (snap.exists()) setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
+        })
+        .catch(() => {});
     } else {
       setTeam(null);
     }
 
-    if (portalUser.role === 'teacher' || portalUser.role === 'admin') {
-      const unsubAll = onSnapshot(collection(db, 'portal_resources'), (snap) => {
-        setPublicResources(
-          snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalResource, 'id'>) }))
-        );
+    const onErr = (err: unknown) => {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to load study resources.'),
       });
+      setLoading(false);
+    };
+
+    if (portalUser.role === 'teacher' || portalUser.role === 'admin') {
+      const unsubAll = onSnapshot(
+        collection(db, 'portal_resources'),
+        (snap) => {
+          setPublicResources(
+            snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalResource, 'id'>) }))
+          );
+          setLoading(false);
+        },
+        onErr
+      );
       return () => unsubAll();
     }
 
@@ -56,7 +75,9 @@ export function ResourcesPage() {
         setPublicResources(
           snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalResource, 'id'>) }))
         );
-      }
+        setLoading(false);
+      },
+      onErr
     );
     return () => unsubPublic();
   }, [portalUser]);
@@ -88,6 +109,12 @@ export function ResourcesPage() {
         setPlanResources(
           snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalResource, 'id'>) }))
         );
+      },
+      (err) => {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to load plan resources.'),
+        });
       }
     );
     return () => unsubPlan();
@@ -161,6 +188,8 @@ export function ResourcesPage() {
         </p>
       </div>
 
+      <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
+
       {/* Search, Plan Filter & Level Filter */}
       <div className="flex flex-col lg:flex-row gap-4 items-stretch lg:items-center justify-between">
         <div className="flex flex-col sm:flex-row gap-3 flex-1">
@@ -216,7 +245,13 @@ export function ResourcesPage() {
       <div className="grid lg:grid-cols-12 gap-8 items-start">
         {/* Resource list */}
         <div className="lg:col-span-5 space-y-3">
-          {filtered.length === 0 ? (
+          {loading ? (
+            <div className="space-y-3 animate-pulse">
+              <div className="h-24 rounded-2xl bg-white border border-[#084F4E]/10" />
+              <div className="h-24 rounded-2xl bg-white border border-[#084F4E]/10" />
+              <div className="h-24 rounded-2xl bg-white border border-[#084F4E]/10" />
+            </div>
+          ) : filtered.length === 0 ? (
             <div className="rounded-2xl border border-[#084F4E]/12 bg-[#FAFBFB] p-8 text-center text-sm text-[#3F4F4F]">
               No resources match your filters yet.
             </div>

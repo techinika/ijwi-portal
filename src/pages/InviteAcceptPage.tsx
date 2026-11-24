@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   doc,
@@ -8,7 +8,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { Users, CheckCircle2, AlertCircle } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import {
   dispatchPortalEmail,
@@ -22,6 +22,7 @@ export function InviteAcceptPage() {
   const { token } = useParams<{ token: string }>();
   const { portalUser, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
+  const redirectTimerRef = useRef<number | null>(null);
 
   const [invite, setInvite] = useState<PortalInvite | null>(null);
   const [team, setTeam] = useState<PortalTeam | null>(null);
@@ -29,6 +30,14 @@ export function InviteAcceptPage() {
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [joinedSuccess, setJoinedSuccess] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (redirectTimerRef.current !== null) {
+        window.clearTimeout(redirectTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     async function load() {
@@ -133,36 +142,37 @@ export function InviteAcceptPage() {
         updatedAt: serverTimestamp(),
       });
 
-      // Notify team owner
-      await pushNotification({
-        userId: invite.ownerId,
-        title: `${activeUser.displayName} joined your team`,
-        body: `${activeUser.displayName} claimed a seat in ${invite.teamName}.`,
-        type: 'team',
-        link: '/team',
-      });
-
-      await dispatchPortalEmail({
-        userId: activeUser.uid,
-        to: activeUser.email,
-        recipientName: activeUser.displayName,
-        type: 'invite_accepted',
-        subject: `Welcome to ${invite.teamName} on Ijwi`,
-        headline: `You joined ${invite.teamName}`,
-        bodyText: teamData.accessActive
-          ? `Your seat is active and your teacher ${teacher.displayName} is ready.`
-          : `You claimed your seat in ${invite.teamName}. Your access will open as soon as ${invite.ownerName} completes invoice payment.`,
-        ctaLabel: 'Open Ijwi Portal',
-        ctaUrl: '/dashboard',
-        essential: true,
-      });
+      // Notify team owner & send welcome email non-blocking so redirect never stalls
+      void Promise.allSettled([
+        pushNotification({
+          userId: invite.ownerId,
+          title: `${activeUser.displayName} joined your team`,
+          body: `${activeUser.displayName} claimed a seat in ${invite.teamName}.`,
+          type: 'team',
+          link: '/team',
+        }),
+        dispatchPortalEmail({
+          userId: activeUser.uid,
+          to: activeUser.email,
+          recipientName: activeUser.displayName,
+          type: 'invite_accepted',
+          subject: `Welcome to ${invite.teamName} on Ijwi`,
+          headline: `You joined ${invite.teamName}`,
+          bodyText: teamData.accessActive
+            ? `Your seat is active and your teacher ${teacher.displayName} is ready.`
+            : `You claimed your seat in ${invite.teamName}. Your access will open as soon as ${invite.ownerName} completes invoice payment.`,
+          ctaLabel: 'Open Ijwi Portal',
+          ctaUrl: '/dashboard',
+          essential: true,
+        }),
+      ]);
 
       setJoinedSuccess(true);
-      setTimeout(() => {
+      redirectTimerRef.current = window.setTimeout(() => {
         navigate(teamData.accessActive ? '/dashboard' : '/profile');
       }, 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not accept invite.');
+      setError(formatPortalError(err, 'Could not accept invite.'));
     } finally {
       setJoining(false);
     }

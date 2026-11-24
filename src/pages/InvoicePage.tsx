@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
 import { Download, CreditCard, CheckCircle2, ArrowRight, RefreshCw } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db, formatPortalError } from '../lib/firebase';
 import { apiFetch } from '../lib/api';
 import { activatePaidInvoice, createEnrolmentInvoice } from '../lib/portalActions';
 import { downloadInvoicePdf } from '../lib/pdfInvoice';
@@ -14,7 +14,8 @@ import type { PortalInvoice } from '../types/portal';
 export function InvoicePage() {
   const { id } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { portalUser } = useAuth();
+  const navigate = useNavigate();
+  const { portalUser, loading: authLoading, signInWithGoogle } = useAuth();
   const [invoice, setInvoice] = useState<PortalInvoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +28,18 @@ export function InvoicePage() {
   const [justPaid, setJustPaid] = useState(false);
 
   useEffect(() => {
-    if (!id || !portalUser) return;
+    if (authLoading) return;
+    if (!id) {
+      setError('Invoice ID is missing.');
+      setLoading(false);
+      return;
+    }
+    if (!portalUser) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
     const ref = doc(db, 'portal_invoices', id);
     const unsub = onSnapshot(
       ref,
@@ -35,16 +47,18 @@ export function InvoicePage() {
         if (snap.exists()) {
           setInvoice({ id: snap.id, ...(snap.data() as Omit<PortalInvoice, 'id'>) });
         } else {
+          setInvoice(null);
           setError('Invoice not found.');
         }
         setLoading(false);
       },
       (err) => {
-        handleFirestoreError(err, OperationType.GET, `portal_invoices/${id}`);
+        setError(formatPortalError(err, 'Unable to load this invoice.'));
+        setLoading(false);
       }
     );
     return () => unsub();
-  }, [id, portalUser]);
+  }, [id, portalUser, authLoading]);
 
   // Handle return redirect from Pesapal or sandbox checkout URL
   useEffect(() => {
@@ -155,6 +169,7 @@ export function InvoicePage() {
   async function handleRequestFreshInvoice() {
     if (!invoice || !portalUser) return;
     setPaying(true);
+    setError(null);
     try {
       const quote = calculateEnrolmentQuote({
         unitPriceCents: invoice.unitPriceCents,
@@ -172,16 +187,36 @@ export function InvoicePage() {
         quote,
         existingTeamId: invoice.teamId,
       });
-      window.location.href = `/invoices/${invoiceId}`;
+      navigate(`/invoices/${invoiceId}`);
+    } catch (err) {
+      setError(formatPortalError(err, 'Unable to create a fresh invoice.'));
     } finally {
       setPaying(false);
     }
   }
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-14">
         <div className="h-96 rounded-[24px] bg-[#FAFBFB] border border-[#084F4E]/10 animate-pulse" />
+      </div>
+    );
+  }
+
+  if (!portalUser) {
+    return (
+      <div className="max-w-xl mx-auto px-4 sm:px-6 py-16 text-center space-y-4">
+        <h1 className="font-display text-2xl text-[#084F4E]">Sign in to view this invoice</h1>
+        <p className="text-sm text-[#3F4F4F]">
+          Use the Google account linked to this enrolment to review and pay your invoice.
+        </p>
+        <button
+          type="button"
+          onClick={() => void signInWithGoogle()}
+          className="inline-flex px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B]"
+        >
+          Continue with Google
+        </button>
       </div>
     );
   }

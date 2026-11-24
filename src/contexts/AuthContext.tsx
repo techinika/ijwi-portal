@@ -19,7 +19,7 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { auth, db, googleProvider } from '../lib/firebase';
+import { auth, db, formatPortalError, googleProvider } from '../lib/firebase';
 import {
   DEFAULT_WEEKLY_AVAILABILITY,
   ensurePortalSeeded,
@@ -72,6 +72,8 @@ interface AuthContextValue {
   loading: boolean;
   authError: string | null;
   clearAuthError: () => void;
+  pendingRedirectPath: string | null;
+  clearPendingRedirectPath: () => void;
   unpaidInvoices: PortalInvoice[];
   notifications: NotificationItem[];
   announcements: Announcement[];
@@ -172,6 +174,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [portalUser, setPortalUser] = useState<PortalUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [pendingRedirectPath, setPendingRedirectPath] = useState<string | null>(null);
   const [unpaidInvoices, setUnpaidInvoices] = useState<PortalInvoice[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
@@ -348,10 +351,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  async function processPendingEnrolment(activeProfile: PortalUser): Promise<void> {
+  async function processPendingEnrolment(activeProfile: PortalUser): Promise<string | null> {
     const pending = loadPendingEnrolment();
-    if (!pending) return;
-    clearPendingEnrolment();
+    if (!pending) return null;
 
     let verifiedQuote = calculateEnrolmentQuote({
       unitPriceCents: pending.plan.unitPriceCents,
@@ -361,6 +363,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const res = await apiFetch<{ quote: PriceQuote }>('/api/pricing/quote', {
         method: 'POST',
+        timeoutMs: 8_000,
         body: JSON.stringify({
           planId: pending.plan.id,
           unitPriceCents: pending.plan.unitPriceCents,
@@ -383,8 +386,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       couponCode: pending.couponCode,
       quote: pending.quote || verifiedQuote,
     });
-    window.history.pushState({}, '', `/invoices/${invoiceId}`);
-    window.dispatchEvent(new PopStateEvent('popstate'));
+    clearPendingEnrolment();
+    const targetPath = `/invoices/${invoiceId}`;
+    setPendingRedirectPath(targetPath);
+    return targetPath;
   }
 
   useEffect(() => {
@@ -403,7 +408,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       })
       .catch((err) => {
-        setAuthError(formatFirebaseAuthError(err));
+        setAuthError(formatPortalError(err, formatFirebaseAuthError(err)));
       });
 
     const unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
@@ -426,6 +431,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       // Immediately set an optimistic normalized profile so the navbar updates at once
       setPortalUser((prev) => prev && prev.uid === fbUser.uid ? prev : normalizePortalUser({}, fbUser));
+      setLoading(false);
 
       const ensured = await ensureUserProfile(fbUser);
       setPortalUser(ensured);
@@ -542,7 +548,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return null;
       }
 
-      const msg = formatFirebaseAuthError(err);
+      const msg = formatPortalError(err, formatFirebaseAuthError(err));
       setAuthError(msg);
       throw new Error(msg);
     }
@@ -568,6 +574,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loading,
         authError,
         clearAuthError: () => setAuthError(null),
+        pendingRedirectPath,
+        clearPendingRedirectPath: () => setPendingRedirectPath(null),
         unpaidInvoices,
         notifications,
         announcements,

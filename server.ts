@@ -287,6 +287,7 @@ async function getPesapalToken(): Promise<string | null> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ consumer_key: key, consumer_secret: secret }),
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) {
     throw new Error(`Pesapal auth failed (${res.status})`);
@@ -496,6 +497,7 @@ export function createApiApp() {
                 url: `${baseUrl}/api/payments/pesapal/ipn`,
                 ipn_notification_type: 'POST',
               }),
+              signal: AbortSignal.timeout(15_000),
             });
             const ipnJson = (await ipnRes.json()) as { ipn_id?: string };
             ipnId = ipnJson.ipn_id || '';
@@ -521,6 +523,7 @@ export function createApiApp() {
                 last_name: rest.join(' ') || 'Ijwi',
               },
             }),
+            signal: AbortSignal.timeout(15_000),
           });
           const submitData = (await submitRes.json()) as {
             order_tracking_id?: string;
@@ -608,6 +611,7 @@ export function createApiApp() {
         )}`,
         {
           headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+          signal: AbortSignal.timeout(15_000),
         }
       );
       const statusJson = (await statusRes.json()) as {
@@ -689,6 +693,7 @@ export function createApiApp() {
           )}`,
           {
             headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+            signal: AbortSignal.timeout(15_000),
           }
         );
         const statusJson = (await statusRes.json()) as {
@@ -841,6 +846,7 @@ export function createApiApp() {
               html,
               text: plainText,
             }),
+            signal: AbortSignal.timeout(6_000),
           });
           if (wRes.ok) {
             const wJson = (await wRes.json().catch(() => ({}))) as { status?: string };
@@ -874,6 +880,7 @@ export function createApiApp() {
               html,
               text: plainText,
             }),
+            signal: AbortSignal.timeout(8_000),
           });
           if (!rRes.ok) {
             const errTxt = await rRes.text();
@@ -945,6 +952,7 @@ export function createApiApp() {
             'Content-Type': mimeType,
           },
           body: new Uint8Array(buf),
+          signal: AbortSignal.timeout(45_000),
         });
         if (!wRes.ok) {
           const detail = await wRes.text();
@@ -954,7 +962,13 @@ export function createApiApp() {
         res.json({ fileKey, sizeBytes: buf.length, storage: 'r2' });
         return;
       } catch (err) {
-        res.status(502).json({ error: err instanceof Error ? err.message : 'Cloudflare Worker upload error.' });
+        const msg =
+          err instanceof Error && err.name === 'TimeoutError'
+            ? 'Resource upload to storage timed out. Please try a smaller file or retry.'
+            : err instanceof Error
+              ? err.message
+              : 'Cloudflare Worker upload error.';
+        res.status(504).json({ error: msg });
         return;
       }
     }
@@ -995,6 +1009,7 @@ export function createApiApp() {
         const headRes = await fetch(`${worker.baseUrl}/r2/objects/${encodeURIComponent(fileKey)}`, {
           method: 'HEAD',
           headers: { 'X-Ijwi-Worker-Secret': worker.sharedSecret },
+          signal: AbortSignal.timeout(8_000),
         });
         existsInR2 = headRes.ok;
       } catch {
@@ -1052,6 +1067,7 @@ export function createApiApp() {
         const wRes = await fetch(`${worker.baseUrl}/r2/objects/${encodeURIComponent(fileKey)}`, {
           method: 'GET',
           headers: forwardHeaders,
+          signal: AbortSignal.timeout(30_000),
         });
         if (!wRes.ok && wRes.status !== 206) {
           res.status(wRes.status === 416 ? 416 : 404).json({ error: 'File not found.' });
@@ -1145,6 +1161,7 @@ export function createApiApp() {
         await fetch(`${worker.baseUrl}/r2/objects/${encodeURIComponent(fileKey)}`, {
           method: 'DELETE',
           headers: { 'X-Ijwi-Worker-Secret': worker.sharedSecret },
+          signal: AbortSignal.timeout(8_000),
         });
       } catch {
         // continue local cleanup as well
@@ -1203,6 +1220,19 @@ export function createApiApp() {
     res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="ijwi-lesson-${bookingId}.ics"`);
     res.send(ics);
+  });
+
+  app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (
+      typeof err === 'object' &&
+      err !== null &&
+      'type' in err &&
+      (err as { type?: string }).type === 'entity.too.large'
+    ) {
+      res.status(413).json({ error: 'File exceeds the maximum upload size limit.' });
+      return;
+    }
+    next(err);
   });
 
   return app;

@@ -13,6 +13,8 @@ export function ProtectedVideoPlayer({ fileKey, title, viewerEmail }: Props) {
 
   useEffect(() => {
     let active = true;
+    setStreamUrl(null);
+    setError(null);
     apiFetch<{ streamUrl: string }>('/api/resources/stream-ticket', {
       method: 'POST',
       body: JSON.stringify({ fileKey }),
@@ -56,6 +58,9 @@ export function ProtectedVideoPlayer({ fileKey, title, viewerEmail }: Props) {
         disablePictureInPicture
         playsInline
         title={title}
+        onError={() =>
+          setError('This video stream could not be loaded. Please refresh or try again later.')
+        }
         className="w-full aspect-video"
       />
       <div className="pointer-events-none select-none absolute top-3 right-3 text-xs text-white/35 font-medium">

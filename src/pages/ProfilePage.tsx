@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   collection,
   deleteDoc,
@@ -12,14 +12,16 @@ import {
   where,
 } from 'firebase/firestore';
 import { Download, Trash2 } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { downloadInvoicePdf } from '../lib/pdfInvoice';
+import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import { formatMoney } from '../shared/pricing';
 import type { PortalInvoice, PortalTeam } from '../types/portal';
 
 export function ProfilePage() {
   const { portalUser, logout } = useAuth();
+  const navigate = useNavigate();
   const [invoices, setInvoices] = useState<PortalInvoice[]>([]);
   const [team, setTeam] = useState<PortalTeam | null>(null);
   const [displayName, setDisplayName] = useState('');
@@ -32,7 +34,8 @@ export function ProfilePage() {
     announcements: true,
   });
   const [saving, setSaving] = useState(false);
-  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
@@ -43,9 +46,11 @@ export function ProfilePage() {
     if (portalUser.emailPrefs) setEmailPrefs(portalUser.emailPrefs);
 
     if (portalUser.teamId) {
-      getDoc(doc(db, 'portal_teams', portalUser.teamId)).then((snap) => {
-        if (snap.exists()) setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
-      });
+      getDoc(doc(db, 'portal_teams', portalUser.teamId))
+        .then((snap) => {
+          if (snap.exists()) setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
+        })
+        .catch(() => {});
     }
 
     const unsub = onSnapshot(
@@ -56,6 +61,12 @@ export function ProfilePage() {
             .map((d) => ({ id: d.id, ...(d.data() as Omit<PortalInvoice, 'id'>) }))
             .sort((a, b) => Date.parse(b.dueAt) - Date.parse(a.dueAt))
         );
+      },
+      (err) => {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to load your billing history.'),
+        });
       }
     );
     return () => unsub();
@@ -71,7 +82,7 @@ export function ProfilePage() {
     e.preventDefault();
     if (!portalUser) return;
     setSaving(true);
-    setSavedMsg(null);
+    setFeedback(null);
     try {
       await updateDoc(doc(db, 'users', portalUser.uid), {
         displayName: displayName.trim() || portalUser.displayName,
@@ -80,7 +91,12 @@ export function ProfilePage() {
         emailPrefs,
         updatedAt: serverTimestamp(),
       });
-      setSavedMsg('Profile preferences saved.');
+      setFeedback({ type: 'success', text: 'Profile preferences saved.' });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to save profile preferences.'),
+      });
     } finally {
       setSaving(false);
     }
@@ -104,8 +120,19 @@ export function ProfilePage() {
 
   async function handleDeleteAccount() {
     if (!portalUser) return;
-    await deleteDoc(doc(db, 'users', portalUser.uid));
-    await logout();
+    setDeleting(true);
+    setFeedback(null);
+    try {
+      await deleteDoc(doc(db, 'users', portalUser.uid));
+      await logout();
+      navigate('/');
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to delete account.'),
+      });
+      setDeleting(false);
+    }
   }
 
   return (
@@ -129,11 +156,7 @@ export function ProfilePage() {
         </div>
       </div>
 
-      {savedMsg && (
-        <div className="rounded-2xl border border-[#0E7C7B]/25 bg-[#E6F4F4] px-5 py-3 text-sm text-[#084F4E]">
-          {savedMsg}
-        </div>
-      )}
+      <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
 
       {/* Profile Settings */}
       <form
@@ -299,10 +322,11 @@ export function ProfilePage() {
           ) : (
             <button
               type="button"
+              disabled={deleting}
               onClick={() => void handleDeleteAccount()}
-              className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl bg-red-700 text-white text-xs font-semibold"
+              className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl bg-red-700 text-white text-xs font-semibold disabled:opacity-50"
             >
-              Confirm permanent delete
+              {deleting ? 'Deleting...' : 'Confirm permanent delete'}
             </button>
           )}
         </div>

@@ -95,4 +95,40 @@ export async function testConnection(): Promise<void> {
   }
 }
 
+export function formatPortalError(
+  error: unknown,
+  fallback = 'Something went wrong. Please try again.'
+): string {
+  if (!error) return fallback;
+  const raw = error instanceof Error ? error.message : String(error);
+  if (!raw) return fallback;
+
+  try {
+    const parsed = JSON.parse(raw) as { error?: string; path?: string };
+    if (parsed && typeof parsed.error === 'string' && parsed.error) {
+      if (parsed.error.toLowerCase().includes('permission')) {
+        return `Permission denied${parsed.path ? ` (${parsed.path})` : ''}. Please make sure you are signed in with the right account.`;
+      }
+      return parsed.error;
+    }
+  } catch {
+    // not a JSON FirestoreErrorInfo string
+  }
+
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code || '')
+      : '';
+  if (code === 'permission-denied' || raw.includes('Missing or insufficient permissions')) {
+    return 'You do not have permission to perform this action. Please check your account access.';
+  }
+  if (code === 'unavailable' || raw.includes('the client is offline')) {
+    return 'Network connection to the database failed. Check your connection and try again.';
+  }
+  if (code === 'deadline-exceeded') {
+    return 'The request timed out. Please try again.';
+  }
+  return raw;
+}
+
 void testConnection();

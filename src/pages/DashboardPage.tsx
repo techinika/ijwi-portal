@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   collection,
   doc,
@@ -12,9 +12,10 @@ import {
   where,
 } from 'firebase/firestore';
 import { Calendar, BookOpen, Users, Award, ArrowRight, CheckCircle2, Target } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { DEFAULT_PLANS, fetchAllActivePlans } from '../lib/seed';
+import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import type {
   GroupSession,
   LessonProgress,
@@ -28,6 +29,7 @@ import type {
 
 export function DashboardPage() {
   const { portalUser } = useAuth();
+  const navigate = useNavigate();
   const [allPlans, setAllPlans] = useState<PortalPlan[]>(DEFAULT_PLANS);
   const [selectedPlanId, setSelectedPlanId] = useState<string>('');
   const [team, setTeam] = useState<PortalTeam | null>(null);
@@ -39,42 +41,57 @@ export function DashboardPage() {
   const [planLinkedResources, setPlanLinkedResources] = useState<PortalResource[]>([]);
   const [upcomingSessions, setUpcomingSessions] = useState<GroupSession[]>([]);
   const [savingPlacement, setSavingPlacement] = useState(false);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
 
   useEffect(() => {
     if (!portalUser) return;
+
+    const onErr = (err: unknown) => {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to load some dashboard data.'),
+      });
+    };
 
     void fetchAllActivePlans().then((list) => {
       if (list.length > 0) setAllPlans(list);
     });
 
     if (portalUser.teamId) {
-      getDoc(doc(db, 'portal_teams', portalUser.teamId)).then((snap) => {
-        if (snap.exists()) {
-          setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
-        }
-      });
+      getDoc(doc(db, 'portal_teams', portalUser.teamId))
+        .then((snap) => {
+          if (snap.exists()) {
+            setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
+          }
+        })
+        .catch(() => {});
     } else {
       setTeam(null);
     }
 
     if (portalUser.teacherId) {
-      getDoc(doc(db, 'portal_teachers', portalUser.teacherId)).then((snap) => {
-        if (snap.exists()) {
-          setTeacher(snap.data() as TeacherProfile);
-        } else {
-          setTeacher(null);
-        }
-      });
+      getDoc(doc(db, 'portal_teachers', portalUser.teacherId))
+        .then((snap) => {
+          if (snap.exists()) {
+            setTeacher(snap.data() as TeacherProfile);
+          } else {
+            setTeacher(null);
+          }
+        })
+        .catch(() => {});
     } else {
       setTeacher(null);
     }
 
     if (portalUser.groupId) {
-      getDoc(doc(db, 'portal_groups', portalUser.groupId)).then((snap) => {
-        if (snap.exists()) {
-          setGroup({ id: snap.id, ...(snap.data() as Omit<StudyGroup, 'id'>) });
-        }
-      });
+      getDoc(doc(db, 'portal_groups', portalUser.groupId))
+        .then((snap) => {
+          if (snap.exists()) {
+            setGroup({ id: snap.id, ...(snap.data() as Omit<StudyGroup, 'id'>) });
+          }
+        })
+        .catch(() => {});
     }
 
     const unsubBookings = onSnapshot(
@@ -85,7 +102,8 @@ export function DashboardPage() {
           .filter((b) => b.status === 'confirmed' || b.status === 'rescheduled')
           .sort((a, b) => Date.parse(a.startUtc) - Date.parse(b.startUtc));
         setBookings(list);
-      }
+      },
+      onErr
     );
 
     const unsubProgress = onSnapshot(
@@ -100,7 +118,8 @@ export function DashboardPage() {
           map[item.lessonId] = item;
         });
         setProgressMap(map);
-      }
+      },
+      onErr
     );
 
     const unsubResources = onSnapshot(
@@ -109,7 +128,8 @@ export function DashboardPage() {
         setPublicResources(
           snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalResource, 'id'>) }))
         );
-      }
+      },
+      onErr
     );
 
     const unsubSessions = onSnapshot(
@@ -120,7 +140,8 @@ export function DashboardPage() {
             .map((d) => ({ id: d.id, ...(d.data() as Omit<GroupSession, 'id'>) }))
             .sort((a, b) => Date.parse(a.startUtc) - Date.parse(b.startUtc))
         );
-      }
+      },
+      onErr
     );
 
     return () => {
@@ -153,6 +174,12 @@ export function DashboardPage() {
         setPlanLinkedResources(
           snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalResource, 'id'>) }))
         );
+      },
+      (err) => {
+        setFeedback({
+          type: 'error',
+          text: formatPortalError(err, 'Unable to load plan resources.'),
+        });
       }
     );
     return () => unsub();
@@ -190,10 +217,17 @@ export function DashboardPage() {
   async function savePlacement(level: string) {
     if (!portalUser) return;
     setSavingPlacement(true);
+    setFeedback(null);
     try {
       await updateDoc(doc(db, 'users', portalUser.uid), {
         placementLevel: level,
         updatedAt: serverTimestamp(),
+      });
+      setFeedback({ type: 'success', text: 'Starting level saved.' });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to save placement level.'),
       });
     } finally {
       setSavingPlacement(false);
@@ -206,43 +240,66 @@ export function DashboardPage() {
     lessonTitle: string
   ) {
     if (!portalUser) return;
-    const current = progressMap[lessonId]?.status || 'not_started';
-    const next =
-      current === 'not_started' ? 'in_progress' : current === 'in_progress' ? 'done' : 'not_started';
+    setBusyKey(`lesson-${lessonId}`);
+    setFeedback(null);
+    try {
+      const current = progressMap[lessonId]?.status || 'not_started';
+      const next =
+        current === 'not_started' ? 'in_progress' : current === 'in_progress' ? 'done' : 'not_started';
 
-    await setDoc(doc(db, 'portal_progress', portalUser.uid, 'lessons', lessonId), {
-      studentId: portalUser.uid,
-      lessonId,
-      lessonTitle,
-      levelTitle,
-      status: next,
-      ...(progressMap[lessonId]?.teacherNote
-        ? { teacherNote: progressMap[lessonId].teacherNote }
-        : {}),
-      ...(next === 'done' ? { completedAt: new Date().toISOString() } : {}),
-      updatedAt: serverTimestamp(),
-    });
+      await setDoc(doc(db, 'portal_progress', portalUser.uid, 'lessons', lessonId), {
+        studentId: portalUser.uid,
+        lessonId,
+        lessonTitle,
+        levelTitle,
+        status: next,
+        ...(progressMap[lessonId]?.teacherNote
+          ? { teacherNote: progressMap[lessonId].teacherNote }
+          : {}),
+        ...(next === 'done' ? { completedAt: new Date().toISOString() } : {}),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to update lesson status.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
-  async function claimLevelCertificate(levelTitle: string) {
+  async function claimLevelCertificate(levelId: string, levelTitle: string) {
     if (!portalUser) return;
-    const certCode = `IJW-${portalUser.uid.slice(0, 4).toUpperCase()}-${Date.now()
-      .toString(36)
-      .toUpperCase()}`;
-    await setDoc(doc(db, 'portal_certificates', certCode), {
-      certCode,
-      userId: portalUser.uid,
-      learnerName: portalUser.displayName,
-      levelName: levelTitle,
-      planName: plan.name,
-      issuedAt: new Date().toISOString(),
-      createdAt: serverTimestamp(),
-    });
-    window.location.href = '/progress';
+    setBusyKey(`cert-${levelId}`);
+    setFeedback(null);
+    try {
+      const certCode = `IJW-${portalUser.uid.slice(0, 4).toUpperCase()}-${Date.now()
+        .toString(36)
+        .toUpperCase()}`;
+      await setDoc(doc(db, 'portal_certificates', certCode), {
+        certCode,
+        userId: portalUser.uid,
+        learnerName: portalUser.displayName,
+        levelName: levelTitle,
+        planName: plan.name,
+        issuedAt: new Date().toISOString(),
+        createdAt: serverTimestamp(),
+      });
+      navigate('/progress');
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text: formatPortalError(err, 'Unable to issue certificate.'),
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12 space-y-8">
+      <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
       {/* Welcome Card */}
       <section className="rounded-[24px] border border-[#084F4E]/15 bg-[#FAFBFB] p-6 sm:p-8">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
@@ -395,11 +452,14 @@ export function DashboardPage() {
                     {allDone && (
                       <button
                         type="button"
-                        onClick={() => void claimLevelCertificate(level.title)}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#E8C97A]/40 text-[#084F4E] text-xs font-semibold hover:bg-[#E8C97A]/60 transition-colors"
+                        disabled={busyKey === `cert-${level.id}`}
+                        onClick={() => void claimLevelCertificate(level.id, level.title)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#E8C97A]/40 text-[#084F4E] text-xs font-semibold hover:bg-[#E8C97A]/60 transition-colors disabled:opacity-50"
                       >
                         <Award className="w-4 h-4" />
-                        <span>Claim certificate</span>
+                        <span>
+                          {busyKey === `cert-${level.id}` ? 'Issuing...' : 'Claim certificate'}
+                        </span>
                       </button>
                     )}
                   </div>
@@ -432,10 +492,11 @@ export function DashboardPage() {
 
                             <button
                               type="button"
+                              disabled={busyKey === `lesson-${lesson.id}`}
                               onClick={() =>
                                 void cycleLessonStatus(level.title, lesson.id, lesson.title)
                               }
-                              className={`self-start inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
+                              className={`self-start inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors disabled:opacity-50 ${
                                 status === 'done'
                                   ? 'bg-[#E6F4F4] text-[#084F4E]'
                                   : status === 'in_progress'
@@ -444,7 +505,7 @@ export function DashboardPage() {
                               }`}
                             >
                               {status === 'done' && <CheckCircle2 className="w-3.5 h-3.5" />}
-                              <span>{statusLabel}</span>
+                              <span>{busyKey === `lesson-${lesson.id}` ? 'Saving...' : statusLabel}</span>
                             </button>
                           </div>
                         </div>
