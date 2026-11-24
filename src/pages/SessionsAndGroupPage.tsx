@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   collection,
@@ -14,12 +14,16 @@ import {
 import { Users, Plus, Calendar } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
-import type { GroupSession, StudyGroup } from '../types/portal';
+import { fetchAllActivePlans } from '../lib/seed';
+import type { GroupSession, PortalPlan, PortalTeam, StudyGroup } from '../types/portal';
 
 export function SessionsAndGroupPage() {
   const { portalUser } = useAuth();
   const [group, setGroup] = useState<StudyGroup | null>(null);
+  const [team, setTeam] = useState<PortalTeam | null>(null);
+  const [plans, setPlans] = useState<PortalPlan[]>([]);
   const [sessions, setSessions] = useState<GroupSession[]>([]);
+  const [planFilter, setPlanFilter] = useState('all');
   const [showCreate, setShowCreate] = useState(false);
 
   const [title, setTitle] = useState('');
@@ -29,14 +33,25 @@ export function SessionsAndGroupPage() {
   const [locationType, setLocationType] = useState<'platform' | 'external'>('platform');
   const [meetingLink, setMeetingLink] = useState('');
   const [description, setDescription] = useState('');
+  const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!portalUser) return;
+    void fetchAllActivePlans().then(setPlans);
+
     if (portalUser.groupId) {
       getDoc(doc(db, 'portal_groups', portalUser.groupId)).then((snap) => {
         if (snap.exists()) setGroup({ id: snap.id, ...(snap.data() as Omit<StudyGroup, 'id'>) });
       });
+    }
+
+    if (portalUser.teamId) {
+      getDoc(doc(db, 'portal_teams', portalUser.teamId)).then((snap) => {
+        if (snap.exists()) setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
+      });
+    } else {
+      setTeam(null);
     }
 
     const unsub = onSnapshot(
@@ -52,7 +67,35 @@ export function SessionsAndGroupPage() {
     return () => unsub();
   }, [portalUser]);
 
+  const appliedPlanIds = useMemo(() => {
+    const ids = new Set<string>();
+    (portalUser?.assignedPlanIds || []).forEach((id) => ids.add(id));
+    (team?.assignedPlanIds || []).forEach((id) => ids.add(id));
+    if (team?.planId) ids.add(team.planId);
+    return Array.from(ids);
+  }, [portalUser, team]);
+
+  const planMap = useMemo(() => {
+    const m = new Map<string, PortalPlan>();
+    plans.forEach((p) => m.set(p.id, p));
+    return m;
+  }, [plans]);
+
+  const filteredSessions = useMemo(() => {
+    if (planFilter === 'all') return sessions;
+    if (planFilter === 'my-plans') {
+      return sessions.filter((s) => s.planIds?.some((pid) => appliedPlanIds.includes(pid)));
+    }
+    return sessions.filter((s) => s.planIds?.includes(planFilter));
+  }, [sessions, planFilter, appliedPlanIds]);
+
   if (!portalUser) return null;
+
+  function toggleSelectedPlan(planId: string) {
+    setSelectedPlanIds((prev) =>
+      prev.includes(planId) ? prev.filter((id) => id !== planId) : [...prev, planId]
+    );
+  }
 
   async function handleCreateSession(e: React.FormEvent) {
     e.preventDefault();
@@ -72,6 +115,7 @@ export function SessionsAndGroupPage() {
         ...(locationType === 'external' && meetingLink.trim()
           ? { meetingLink: meetingLink.trim() }
           : {}),
+        ...(selectedPlanIds.length > 0 ? { planIds: selectedPlanIds } : {}),
         status: 'upcoming',
         attendeeIds: [portalUser.uid],
         attendeeNames: [portalUser.displayName.split(' ')[0]],
@@ -82,6 +126,7 @@ export function SessionsAndGroupPage() {
       setTitle('');
       setDescription('');
       setMeetingLink('');
+      setSelectedPlanIds([]);
     } finally {
       setSaving(false);
     }
@@ -117,15 +162,15 @@ export function SessionsAndGroupPage() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12 space-y-10">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-12 space-y-8 sm:space-y-10">
       {/* Study Group or Team summary */}
-      <section className="rounded-[24px] border border-[#084F4E]/15 bg-[#FAFBFB] p-6 sm:p-8">
-        <div className="grid md:grid-cols-12 gap-6 items-center">
+      <section className="rounded-[24px] border border-[#084F4E]/15 bg-[#FAFBFB] p-5 sm:p-8">
+        <div className="grid md:grid-cols-12 gap-5 sm:gap-6 items-center">
           <div className="md:col-span-8 space-y-2">
             <p className="text-xs font-semibold text-[#0E7C7B]">
               {portalUser.teamId ? 'My Team' : 'My Study Group'}
             </p>
-            <h1 className="font-display text-3xl font-semibold text-[#084F4E]">
+            <h1 className="font-display text-2xl sm:text-3xl font-semibold text-[#084F4E]">
               {group ? group.name : portalUser.teamId ? 'Learning with your team' : 'Your Ijwi Study Circle'}
             </h1>
             {group ? (
@@ -159,29 +204,50 @@ export function SessionsAndGroupPage() {
 
       {/* Peer Group Sessions */}
       <section className="space-y-6">
-        <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h2 className="font-display text-2xl font-semibold text-[#084F4E]">
               Group practice sessions
             </h2>
             <p className="text-sm text-[#3F4F4F]">
-              Host a topic meetup or join another learner&apos;s session.
+              Host a topic meetup or join a session linked to your learning plan.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowCreate((v) => !v)}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B]"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Create session</span>
-          </button>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full sm:w-auto">
+            {plans.length > 0 && (
+              <select
+                aria-label="Filter sessions by learning plan"
+                value={planFilter}
+                onChange={(e) => setPlanFilter(e.target.value)}
+                className="w-full sm:w-auto min-h-[42px] px-3.5 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm bg-white text-[#084F4E]"
+              >
+                <option value="all">All learning plans</option>
+                {appliedPlanIds.length > 0 && (
+                  <option value="my-plans">Only my applied plans</option>
+                )}
+                {plans.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setShowCreate((v) => !v)}
+              className="w-full sm:w-auto min-h-[42px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B]"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Create session</span>
+            </button>
+          </div>
         </div>
 
         {showCreate && (
           <form
             onSubmit={(e) => void handleCreateSession(e)}
-            className="rounded-[20px] border border-[#084F4E]/15 bg-white p-6 space-y-4"
+            className="rounded-[20px] border border-[#084F4E]/15 bg-white p-5 sm:p-6 space-y-4"
           >
             <div className="grid sm:grid-cols-2 gap-4">
               <div>
@@ -234,6 +300,33 @@ export function SessionsAndGroupPage() {
               </div>
             </div>
 
+            {plans.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-[#1F2A2A] mb-2">
+                  Apply to learning plan(s) (optional)
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {plans.map((p) => {
+                    const active = selectedPlanIds.includes(p.id);
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => toggleSelectedPlan(p.id)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                          active
+                            ? 'bg-[#084F4E] text-white'
+                            : 'border border-[#084F4E]/20 text-[#3F4F4F] hover:bg-[#E6F4F4]/60'
+                        }`}
+                      >
+                        {p.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center gap-4">
               <label className="text-xs font-medium text-[#1F2A2A]">Where:</label>
               <button
@@ -279,18 +372,18 @@ export function SessionsAndGroupPage() {
               className="w-full px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
             />
 
-            <div className="flex gap-3">
+            <div className="flex flex-col sm:flex-row gap-3">
               <button
                 type="submit"
                 disabled={saving}
-                className="px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold"
+                className="w-full sm:w-auto min-h-[42px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold"
               >
                 {saving ? 'Publishing...' : 'Publish session'}
               </button>
               <button
                 type="button"
                 onClick={() => setShowCreate(false)}
-                className="px-4 py-2.5 rounded-xl text-sm text-[#3F4F4F]"
+                className="w-full sm:w-auto min-h-[42px] px-4 py-2.5 rounded-xl text-sm text-[#3F4F4F] border border-[#084F4E]/15 sm:border-0"
               >
                 Cancel
               </button>
@@ -298,13 +391,13 @@ export function SessionsAndGroupPage() {
           </form>
         )}
 
-        {sessions.length === 0 ? (
-          <div className="rounded-[20px] border border-[#084F4E]/12 bg-white p-10 text-center text-sm text-[#3F4F4F]">
-            No upcoming peer sessions yet. Create the first one above.
+        {filteredSessions.length === 0 ? (
+          <div className="rounded-[20px] border border-[#084F4E]/12 bg-white p-8 sm:p-10 text-center text-sm text-[#3F4F4F]">
+            No upcoming group sessions match this filter yet.
           </div>
         ) : (
           <div className="grid md:grid-cols-2 gap-5">
-            {sessions.map((s) => {
+            {filteredSessions.map((s) => {
               const joined = s.attendeeIds.includes(portalUser.uid);
               const isCreator = s.creatorId === portalUser.uid;
               const isFull = s.attendeeIds.length >= s.capacity;
@@ -313,11 +406,14 @@ export function SessionsAndGroupPage() {
                 timeStyle: 'short',
                 timeZone: portalUser.timezone,
               }).format(new Date(s.startUtc));
+              const linkedPlans = (s.planIds || [])
+                .map((pid) => planMap.get(pid))
+                .filter((p): p is PortalPlan => Boolean(p));
 
               return (
                 <div
                   key={s.id}
-                  className="rounded-[20px] border border-[#084F4E]/12 bg-white p-6 space-y-3"
+                  className="rounded-[20px] border border-[#084F4E]/12 bg-white p-5 sm:p-6 space-y-3"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div>
@@ -330,6 +426,20 @@ export function SessionsAndGroupPage() {
                     </div>
                     <Calendar className="w-4 h-4 text-[#0E7C7B] shrink-0" />
                   </div>
+
+                  {linkedPlans.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {linkedPlans.map((lp) => (
+                        <span
+                          key={lp.id}
+                          title={lp.objective}
+                          className="inline-block px-2.5 py-0.5 rounded-md bg-[#E6F4F4] text-[11px] font-medium text-[#084F4E]"
+                        >
+                          {lp.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
 
                   <p className="text-sm text-[#1F2A2A] tabular-nums">{when}</p>
                   {s.description && <p className="text-sm text-[#3F4F4F]">{s.description}</p>}
@@ -352,13 +462,13 @@ export function SessionsAndGroupPage() {
                     </a>
                   )}
 
-                  <div className="flex flex-wrap gap-2 pt-2">
+                  <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2 pt-2">
                     {!isCreator && (
                       <button
                         type="button"
                         disabled={!joined && isFull}
                         onClick={() => void toggleJoin(s)}
-                        className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
+                        className={`w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
                           joined
                             ? 'border border-[#084F4E]/20 text-[#084F4E] hover:bg-[#FAFBFB]'
                             : 'bg-[#084F4E] text-white hover:bg-[#0E7C7B] disabled:opacity-50'
@@ -372,7 +482,7 @@ export function SessionsAndGroupPage() {
                       <button
                         type="button"
                         onClick={() => void cancelSession(s)}
-                        className="px-4 py-2 rounded-xl border border-red-200 text-xs font-medium text-red-700 hover:bg-red-50"
+                        className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl border border-red-200 text-xs font-medium text-red-700 hover:bg-red-50"
                       >
                         Cancel session
                       </button>

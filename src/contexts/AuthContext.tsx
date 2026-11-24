@@ -20,7 +20,11 @@ import {
   where,
 } from 'firebase/firestore';
 import { auth, db, googleProvider } from '../lib/firebase';
-import { ensurePortalSeeded } from '../lib/seed';
+import {
+  DEFAULT_WEEKLY_AVAILABILITY,
+  ensurePortalSeeded,
+  teacherInviteDocId,
+} from '../lib/seed';
 import { createEnrolmentInvoice, dispatchPortalEmail } from '../lib/portalActions';
 import { apiFetch } from '../lib/api';
 import { calculateEnrolmentQuote, type PriceQuote } from '../shared/pricing';
@@ -30,6 +34,7 @@ import type {
   PortalInvoice,
   PortalPlan,
   PortalUser,
+  TeacherInvite,
 } from '../types/portal';
 
 export interface PendingEnrolment {
@@ -114,6 +119,9 @@ function normalizePortalUser(
     teamId: typeof raw.teamId === 'string' ? raw.teamId : undefined,
     groupId: typeof raw.groupId === 'string' ? raw.groupId : undefined,
     teacherId: typeof raw.teacherId === 'string' ? raw.teacherId : undefined,
+    assignedPlanIds: Array.isArray(raw.assignedPlanIds)
+      ? raw.assignedPlanIds.filter((x): x is string => typeof x === 'string')
+      : undefined,
     accessActive: isBootstrapAdmin ? true : Boolean(raw.accessActive),
     isTeamOwner: Boolean(raw.isTeamOwner),
     placementLevel: typeof raw.placementLevel === 'string' ? raw.placementLevel : undefined,
@@ -182,17 +190,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const userRef = doc(db, 'users', fbUser.uid);
 
       try {
+        // Check if this Google user has an admin-issued pending teacher invite
+        let claimedTeacherInvite: TeacherInvite | null = null;
+        if (fbUser.email && fbUser.emailVerified) {
+          try {
+            const inviteKey = teacherInviteDocId(fbUser.email);
+            const invSnap = await getDoc(doc(db, 'portal_teacher_invites', inviteKey));
+            if (invSnap.exists()) {
+              const inv = { id: invSnap.id, ...(invSnap.data() as Omit<TeacherInvite, 'id'>) };
+              if (
+                !inv.revoked &&
+                inv.email.toLowerCase() === fbUser.email.toLowerCase() &&
+                (!inv.claimedBy || inv.claimedBy === fbUser.uid)
+              ) {
+                claimedTeacherInvite = inv;
+              }
+            }
+          } catch {
+            // ignore if no invite
+          }
+        }
+
         const snap = await getDoc(userRef);
+        let ensuredProfile: PortalUser;
+
         if (!snap.exists()) {
+          const initialRole = isBootstrapAdmin
+            ? 'admin'
+            : claimedTeacherInvite
+              ? 'teacher'
+              : 'student';
+          const initialAccess = isBootstrapAdmin || Boolean(claimedTeacherInvite);
+
           const newProfile: Omit<PortalUser, 'createdAt' | 'updatedAt'> = {
             uid: fbUser.uid,
             email: fbUser.email || '',
-            displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'Learner',
-            photoUrl: fbUser.photoURL || '',
-            role: isBootstrapAdmin ? 'admin' : 'student',
+            displayName:
+              claimedTeacherInvite?.displayName ||
+              fbUser.displayName ||
+              fbUser.email?.split('@')[0] ||
+              'Learner',
+            photoUrl: fbUser.photoURL || claimedTeacherInvite?.photoUrl || '',
+            role: initialRole,
             timezone: detectedTz,
             status: 'active',
-            accessActive: isBootstrapAdmin,
+            accessActive: initialAccess,
             isTeamOwner: false,
             noShowCount: 0,
             lateCancelCount: 0,
@@ -214,29 +256,84 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             to: newProfile.email,
             recipientName: newProfile.displayName,
             type: 'welcome',
-            subject: 'Muraho! Welcome to Ijwi Portal',
-            headline: 'Welcome to Ijwi',
-            bodyText:
-              'Your account is ready. Complete your enrolment or pay your waiting invoice to meet your Kinyarwanda teacher and study circle.',
-            ctaLabel: 'Open Ijwi Portal',
-            ctaUrl: '/',
+            subject: claimedTeacherInvite
+              ? 'Muraho! Your Ijwi Teacher Desk is ready'
+              : 'Muraho! Welcome to Ijwi Portal',
+            headline: claimedTeacherInvite ? 'Welcome to the Ijwi Teaching Team' : 'Welcome to Ijwi',
+            bodyText: claimedTeacherInvite
+              ? 'Your teacher account is active. Open your Teacher Desk to set your weekly hours, create learning plans, and share resources.'
+              : 'Your account is ready. Complete your enrolment or pay your waiting invoice to meet your Kinyarwanda teacher and study circle.',
+            ctaLabel: claimedTeacherInvite ? 'Open Teacher Desk' : 'Open Ijwi Portal',
+            ctaUrl: claimedTeacherInvite ? '/teacher' : '/',
             essential: true,
           });
 
-          return normalizePortalUser(newProfile as Record<string, unknown>, fbUser);
+          ensuredProfile = normalizePortalUser(newProfile as Record<string, unknown>, fbUser);
+        } else {
+          const rawData = snap.data() as Record<string, unknown>;
+          if (isBootstrapAdmin && rawData.role !== 'admin') {
+            await updateDoc(userRef, {
+              role: 'admin',
+              accessActive: true,
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+          } else if (claimedTeacherInvite && rawData.role !== 'teacher' && rawData.role !== 'admin') {
+            await updateDoc(userRef, {
+              role: 'teacher',
+              accessActive: true,
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+            rawData.role = 'teacher';
+            rawData.accessActive = true;
+          }
+          ensuredProfile = normalizePortalUser(rawData, fbUser);
         }
 
-        const rawData = snap.data() as Record<string, unknown>;
-        if (isBootstrapAdmin && rawData.role !== 'admin') {
-          await updateDoc(userRef, {
-            role: 'admin',
-            accessActive: true,
-            updatedAt: serverTimestamp(),
-          }).catch(() => {
-            // ignore if existing doc schema differs; normalized profile still grants UI access
-          });
+        // Complete claiming the teacher profile if a valid invite matched
+        if (claimedTeacherInvite) {
+          try {
+            const teacherRef = doc(db, 'portal_teachers', fbUser.uid);
+            const tSnap = await getDoc(teacherRef);
+            if (!tSnap.exists()) {
+              await setDoc(teacherRef, {
+                uid: fbUser.uid,
+                email: fbUser.email || claimedTeacherInvite.email,
+                displayName: claimedTeacherInvite.displayName || ensuredProfile.displayName,
+                photoUrl: fbUser.photoURL || claimedTeacherInvite.photoUrl || '',
+                bio: claimedTeacherInvite.bio || 'Kinyarwanda teacher at Ijwi.',
+                availability: DEFAULT_WEEKLY_AVAILABILITY,
+                daysOff: [],
+                lessonLengthMin: claimedTeacherInvite.lessonLengthMin || 45,
+                bufferMin: claimedTeacherInvite.bufferMin ?? 15,
+                maxPerDay: claimedTeacherInvite.maxPerDay || 6,
+                active: true,
+                pendingClaim: false,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+            if (!claimedTeacherInvite.claimedBy) {
+              await updateDoc(doc(db, 'portal_teacher_invites', claimedTeacherInvite.id), {
+                claimedBy: fbUser.uid,
+                updatedAt: serverTimestamp(),
+              });
+            }
+            if (
+              claimedTeacherInvite.teacherProfileId &&
+              claimedTeacherInvite.teacherProfileId !== fbUser.uid
+            ) {
+              await updateDoc(doc(db, 'portal_teachers', claimedTeacherInvite.teacherProfileId), {
+                active: false,
+                pendingClaim: false,
+                updatedAt: serverTimestamp(),
+              }).catch(() => {});
+            }
+          } catch (claimErr) {
+            console.warn('Teacher invite claim step skipped:', claimErr);
+          }
         }
-        return normalizePortalUser(rawData, fbUser);
+
+        return ensuredProfile;
       } catch (err) {
         console.error('Error ensuring user profile in Firestore:', err);
         return normalizePortalUser({}, fbUser);

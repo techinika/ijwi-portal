@@ -16,6 +16,7 @@
         "teamId": { "type": "string", "maxLength": 128 },
         "groupId": { "type": "string", "maxLength": 128 },
         "teacherId": { "type": "string", "maxLength": 128 },
+        "assignedPlanIds": { "type": "array" },
         "accessActive": { "type": "boolean" },
         "isTeamOwner": { "type": "boolean" },
         "placementLevel": { "type": "string", "maxLength": 60 },
@@ -30,21 +31,26 @@
     },
     "Plan": {
       "title": "Kinyarwanda Plan",
-      "description": "Enrolment plan with pricing and structured learning path.",
+      "description": "Enrolment and curriculum learning plan created by a teacher or admin, with objective.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "name": { "type": "string", "maxLength": 120 },
+        "objective": { "type": "string", "maxLength": 600 },
         "description": { "type": "string", "maxLength": 600 },
+        "level": { "type": "string", "maxLength": 60 },
+        "teacherId": { "type": "string", "maxLength": 128 },
+        "teacherName": { "type": "string", "maxLength": 120 },
         "unitPriceCents": { "type": "integer" },
         "currency": { "type": "string", "maxLength": 8 },
         "included": { "type": "array" },
         "learningPath": { "type": "array" },
+        "isPublicEnrolment": { "type": "boolean" },
         "active": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "name", "description", "unitPriceCents", "currency", "included", "learningPath", "active", "createdAt", "updatedAt"]
+      "required": ["id", "name", "objective", "description", "unitPriceCents", "currency", "included", "learningPath", "active", "createdAt", "updatedAt"]
     },
     "Invoice": {
       "title": "Invoice",
@@ -93,8 +99,10 @@
         "ownerName": { "type": "string", "maxLength": 120 },
         "name": { "type": "string", "maxLength": 120 },
         "planId": { "type": "string", "maxLength": 128 },
+        "assignedPlanIds": { "type": "array" },
         "seatsTotal": { "type": "integer" },
         "seatsUsed": { "type": "integer" },
+        "invoiceIds": { "type": "array" },
         "accessActive": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -153,10 +161,11 @@
     },
     "TeacherProfile": {
       "title": "Teacher Profile",
-      "description": "Public teacher profile and weekly availability configuration.",
+      "description": "Teacher profile and weekly availability configuration.",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 254 },
         "displayName": { "type": "string", "maxLength": 120 },
         "photoUrl": { "type": "string", "maxLength": 512 },
         "bio": { "type": "string", "maxLength": 600 },
@@ -166,10 +175,44 @@
         "bufferMin": { "type": "integer" },
         "maxPerDay": { "type": "integer" },
         "active": { "type": "boolean" },
+        "pendingClaim": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "displayName", "photoUrl", "bio", "availability", "daysOff", "lessonLengthMin", "bufferMin", "maxPerDay", "active", "createdAt", "updatedAt"]
+    },
+    "TeacherInvite": {
+      "title": "Teacher Invite",
+      "description": "Admin-created teacher invite keyed by normalized email so a teacher is automatically promoted upon verified Google sign-in.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 254 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "photoUrl": { "type": "string", "maxLength": 512 },
+        "bio": { "type": "string", "maxLength": 600 },
+        "teacherProfileId": { "type": "string", "maxLength": 128 },
+        "lessonLengthMin": { "type": "integer" },
+        "bufferMin": { "type": "integer" },
+        "maxPerDay": { "type": "integer" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "claimedBy": { "type": "string", "maxLength": 128 },
+        "revoked": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "displayName", "photoUrl", "bio", "teacherProfileId", "lessonLengthMin", "bufferMin", "maxPerDay", "createdBy", "revoked", "createdAt", "updatedAt"]
+    },
+    "BusySlot": {
+      "title": "Teacher Busy Slot",
+      "description": "Non-PII busy time window for a teacher used to prevent double-booking.",
+      "type": "object",
+      "properties": {
+        "startUtc": { "type": "string", "maxLength": 64 },
+        "endUtc": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["confirmed", "rescheduled", "cancelled", "completed", "no_show", "late_cancel"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["startUtc", "endUtc", "status", "updatedAt"]
     },
     "Booking": {
       "title": "Lesson Booking",
@@ -220,6 +263,7 @@
         "uploaderId": { "type": "string", "maxLength": 128 },
         "uploaderName": { "type": "string", "maxLength": 120 },
         "publicToPaid": { "type": "boolean" },
+        "planIds": { "type": "array" },
         "targetStudentIds": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -228,7 +272,7 @@
     },
     "GroupSession": {
       "title": "Group Study Session",
-      "description": "Student-created peer practice session.",
+      "description": "Peer or teacher-created practice session, optionally linked to learning plans.",
       "type": "object",
       "properties": {
         "creatorId": { "type": "string", "maxLength": 128 },
@@ -240,6 +284,7 @@
         "capacity": { "type": "integer" },
         "locationType": { "type": "string", "enum": ["platform", "external"] },
         "meetingLink": { "type": "string", "maxLength": 512 },
+        "planIds": { "type": "array" },
         "status": { "type": "string", "enum": ["upcoming", "cancelled", "completed"] },
         "attendeeIds": { "type": "array" },
         "attendeeNames": { "type": "array" },
@@ -385,10 +430,12 @@
     "/portal_invites/{inviteId}": { "schema": { "$ref": "#/entities/Invite" }, "description": "Single-use expiring team invite tokens" },
     "/portal_groups/{groupId}": { "schema": { "$ref": "#/entities/StudyGroup" }, "description": "Individual learner study groups" },
     "/portal_teachers/{uid}": { "schema": { "$ref": "#/entities/TeacherProfile" }, "description": "Teacher profiles and availability" },
+    "/portal_teachers/{uid}/busySlots/{slotId}": { "schema": { "$ref": "#/entities/BusySlot" }, "description": "Non-PII teacher busy time slots" },
+    "/portal_teacher_invites/{inviteId}": { "schema": { "$ref": "#/entities/TeacherInvite" }, "description": "Admin-issued teacher invitations keyed by normalized email" },
     "/portal_bookings/{bookingId}": { "schema": { "$ref": "#/entities/Booking" }, "description": "1-on-1 lesson bookings" },
     "/portal_progress/{uid}/lessons/{lessonId}": { "schema": { "$ref": "#/entities/LessonProgress" }, "description": "Learner progress per lesson" },
     "/portal_resources/{resourceId}": { "schema": { "$ref": "#/entities/Resource" }, "description": "Protected learning resources metadata" },
-    "/portal_sessions/{sessionId}": { "schema": { "$ref": "#/entities/GroupSession" }, "description": "Student-created group sessions" },
+    "/portal_sessions/{sessionId}": { "schema": { "$ref": "#/entities/GroupSession" }, "description": "Group practice sessions" },
     "/portal_coupons/{code}": { "schema": { "$ref": "#/entities/Coupon" }, "description": "Discount coupons" },
     "/portal_certificates/{certCode}": { "schema": { "$ref": "#/entities/Certificate" }, "description": "Verifiable level certificates" },
     "/portal_feedback/{feedbackId}": { "schema": { "$ref": "#/entities/Feedback" }, "description": "Student lesson ratings (admin visible)" },

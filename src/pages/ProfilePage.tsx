@@ -109,21 +109,21 @@ export function ProfilePage() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 sm:py-12 space-y-8">
-      <div className="flex items-center gap-4">
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-12 space-y-6 sm:space-y-8">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-4">
         {portalUser.photoUrl && (
           <img
             src={portalUser.photoUrl}
             alt={portalUser.displayName}
             referrerPolicy="no-referrer"
-            className="w-16 h-16 rounded-2xl object-cover border border-[#084F4E]/15"
+            className="w-16 h-16 rounded-2xl object-cover border border-[#084F4E]/15 shrink-0"
           />
         )}
-        <div>
-          <h1 className="font-display text-3xl font-semibold text-[#084F4E]">
+        <div className="min-w-0">
+          <h1 className="font-display text-2xl sm:text-3xl font-semibold text-[#084F4E]">
             Profile &amp; Billing
           </h1>
-          <p className="text-sm text-[#3F4F4F]">
+          <p className="text-sm text-[#3F4F4F] break-all">
             {portalUser.email} · Role: <span className="capitalize">{portalUser.role}</span>
           </p>
         </div>
@@ -138,7 +138,7 @@ export function ProfilePage() {
       {/* Profile Settings */}
       <form
         onSubmit={(e) => void handleSave(e)}
-        className="rounded-[24px] border border-[#084F4E]/12 bg-white p-6 sm:p-8 space-y-5"
+        className="rounded-[24px] border border-[#084F4E]/12 bg-white p-5 sm:p-8 space-y-5"
       >
         <h2 className="font-display text-xl font-semibold text-[#084F4E]">
           Personal details &amp; email preferences
@@ -153,7 +153,7 @@ export function ProfilePage() {
               id="prof-name"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              className="w-full px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
+              className="w-full min-h-[42px] px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
             />
           </div>
           <div>
@@ -164,7 +164,7 @@ export function ProfilePage() {
               id="prof-tz"
               value={timezone}
               onChange={(e) => setTimezone(e.target.value)}
-              className="w-full px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
+              className="w-full min-h-[42px] px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
             />
           </div>
         </div>
@@ -177,11 +177,11 @@ export function ProfilePage() {
             id="prof-org"
             value={organisation}
             onChange={(e) => setOrganisation(e.target.value)}
-            className="w-full px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
+            className="w-full min-h-[42px] px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
           />
         </div>
 
-        <div className="pt-2 border-t border-[#084F4E]/10 space-y-2">
+        <div className="pt-2 border-t border-[#084F4E]/10 space-y-2.5">
           <p className="text-xs font-semibold text-[#084F4E]">Optional emails (receipts always send)</p>
           {(
             [
@@ -191,12 +191,12 @@ export function ProfilePage() {
               ['announcements', 'Academy announcements'],
             ] as const
           ).map(([key, label]) => (
-            <label key={key} className="flex items-center gap-2.5 text-sm text-[#3F4F4F]">
+            <label key={key} className="flex items-center gap-3 text-sm text-[#3F4F4F] py-0.5">
               <input
                 type="checkbox"
                 checked={emailPrefs[key]}
                 onChange={(e) => setEmailPrefs({ ...emailPrefs, [key]: e.target.checked })}
-                className="rounded border-[#084F4E]/30 text-[#084F4E]"
+                className="w-4 h-4 rounded border-[#084F4E]/30 text-[#084F4E]"
               />
               <span>{label}</span>
             </label>
@@ -206,14 +206,14 @@ export function ProfilePage() {
         <button
           type="submit"
           disabled={saving}
-          className="px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B]"
+          className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B]"
         >
           {saving ? 'Saving...' : 'Save profile'}
         </button>
       </form>
 
       {/* Billing */}
-      <section className="rounded-[24px] border border-[#084F4E]/12 bg-white p-6 sm:p-8 space-y-4">
+      <section className="rounded-[24px] border border-[#084F4E]/12 bg-white p-5 sm:p-8 space-y-4">
         <h2 className="font-display text-xl font-semibold text-[#084F4E]">Billing</h2>
 
         {isTeamMemberNotOwner && team && (
@@ -235,7 +235,7 @@ export function ProfilePage() {
             {invoices.map((inv) => (
               <div
                 key={inv.id}
-                className="py-4 flex flex-wrap items-center justify-between gap-4 text-sm"
+                className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm"
               >
                 <div>
                   <p className="font-semibold text-[#084F4E] tabular-nums">
@@ -250,14 +250,14 @@ export function ProfilePage() {
                   <button
                     type="button"
                     onClick={() => downloadInvoicePdf(inv)}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] hover:bg-[#E6F4F4]"
+                    className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] hover:bg-[#E6F4F4]"
                   >
                     <Download className="w-3.5 h-3.5" />
                     <span>PDF</span>
                   </button>
                   <Link
                     to={`/invoices/${inv.id}`}
-                    className="px-3.5 py-1.5 rounded-lg bg-[#084F4E] text-white text-xs font-semibold hover:bg-[#0E7C7B]"
+                    className="min-h-[38px] inline-flex items-center px-3.5 py-1.5 rounded-lg bg-[#084F4E] text-white text-xs font-semibold hover:bg-[#0E7C7B]"
                   >
                     {inv.status === 'unpaid' ? 'Pay now' : 'View'}
                   </Link>
@@ -269,7 +269,7 @@ export function ProfilePage() {
       </section>
 
       {/* Privacy: Export & Delete */}
-      <section className="rounded-[24px] border border-[#084F4E]/12 bg-[#FAFBFB] p-6 sm:p-8 flex flex-wrap items-center justify-between gap-4">
+      <section className="rounded-[24px] border border-[#084F4E]/12 bg-[#FAFBFB] p-5 sm:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="font-display text-lg font-semibold text-[#084F4E]">
             Your data &amp; account
@@ -279,11 +279,11 @@ export function ProfilePage() {
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-col sm:flex-row gap-2.5 w-full sm:w-auto">
           <button
             type="button"
             onClick={handleExportData}
-            className="px-4 py-2 rounded-xl border border-[#084F4E]/20 bg-white text-xs font-medium text-[#084F4E]"
+            className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl border border-[#084F4E]/20 bg-white text-xs font-medium text-[#084F4E]"
           >
             Export my data
           </button>
@@ -291,7 +291,7 @@ export function ProfilePage() {
             <button
               type="button"
               onClick={() => setConfirmDelete(true)}
-              className="inline-flex items-center gap-1 px-4 py-2 rounded-xl border border-red-200 bg-white text-xs font-medium text-red-700"
+              className="w-full sm:w-auto min-h-[40px] inline-flex items-center justify-center gap-1 px-4 py-2 rounded-xl border border-red-200 bg-white text-xs font-medium text-red-700"
             >
               <Trash2 className="w-3.5 h-3.5" />
               <span>Delete account</span>
@@ -300,7 +300,7 @@ export function ProfilePage() {
             <button
               type="button"
               onClick={() => void handleDeleteAccount()}
-              className="px-4 py-2 rounded-xl bg-red-700 text-white text-xs font-semibold"
+              className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl bg-red-700 text-white text-xs font-semibold"
             >
               Confirm permanent delete
             </button>

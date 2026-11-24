@@ -15,8 +15,13 @@ export const DEFAULT_PLANS: Array<Omit<PortalPlan, 'createdAt' | 'updatedAt'>> =
   {
     id: 'kinyarwanda-core',
     name: 'Kinyarwanda Foundations & Conversation',
+    objective:
+      'Hold warm everyday conversations in Kinyarwanda, master polite greetings, navigate daily life in Rwanda, and understand core noun-class patterns.',
     description:
       'Learn real-world Kinyarwanda with a dedicated Rwandan teacher, a structured level path, private study resources, and a supportive cohort.',
+    level: 'All levels',
+    teacherId: 'ijwi-curriculum',
+    teacherName: 'Ijwi Teaching Team',
     unitPriceCents: 4000, // USD 40 per person
     currency: 'USD',
     included: [
@@ -58,57 +63,24 @@ export const DEFAULT_PLANS: Array<Omit<PortalPlan, 'createdAt' | 'updatedAt'>> =
         ],
       },
     ],
+    isPublicEnrolment: true,
     active: true,
   },
 ];
 
-export const DEFAULT_TEACHERS: Array<Omit<TeacherProfile, 'createdAt' | 'updatedAt'>> = [
-  {
-    uid: 'teacher-aline-mukamana',
-    displayName: 'Aline Mukamana',
-    photoUrl: '/src/assets/images/teacher_aline_portrait_1795519554005.jpg',
-    bio: 'Born and raised in Kigali with 8 years teaching Kinyarwanda to international professionals, NGO teams, and families.',
-    availability: [
-      { dayOfWeek: 1, startHourUtc: 8, startMinuteUtc: 0 },
-      { dayOfWeek: 1, startHourUtc: 10, startMinuteUtc: 0 },
-      { dayOfWeek: 1, startHourUtc: 15, startMinuteUtc: 0 },
-      { dayOfWeek: 2, startHourUtc: 9, startMinuteUtc: 0 },
-      { dayOfWeek: 2, startHourUtc: 14, startMinuteUtc: 0 },
-      { dayOfWeek: 3, startHourUtc: 8, startMinuteUtc: 0 },
-      { dayOfWeek: 3, startHourUtc: 16, startMinuteUtc: 0 },
-      { dayOfWeek: 4, startHourUtc: 10, startMinuteUtc: 0 },
-      { dayOfWeek: 4, startHourUtc: 15, startMinuteUtc: 0 },
-      { dayOfWeek: 5, startHourUtc: 9, startMinuteUtc: 0 },
-    ],
-    daysOff: [],
-    lessonLengthMin: 45,
-    bufferMin: 15,
-    maxPerDay: 6,
-    active: true,
-  },
-  {
-    uid: 'teacher-jean-habimana',
-    displayName: 'Jean-Paul Habimana',
-    photoUrl: '/src/assets/images/teacher_jean_portrait_1795519554698.jpg',
-    bio: 'Applied linguist and conversation coach specialising in tone, noun-class fluency, and workplace Kinyarwanda.',
-    availability: [
-      { dayOfWeek: 1, startHourUtc: 11, startMinuteUtc: 0 },
-      { dayOfWeek: 1, startHourUtc: 17, startMinuteUtc: 0 },
-      { dayOfWeek: 2, startHourUtc: 10, startMinuteUtc: 0 },
-      { dayOfWeek: 2, startHourUtc: 16, startMinuteUtc: 0 },
-      { dayOfWeek: 3, startHourUtc: 12, startMinuteUtc: 0 },
-      { dayOfWeek: 4, startHourUtc: 9, startMinuteUtc: 0 },
-      { dayOfWeek: 4, startHourUtc: 17, startMinuteUtc: 0 },
-      { dayOfWeek: 5, startHourUtc: 11, startMinuteUtc: 0 },
-      { dayOfWeek: 6, startHourUtc: 9, startMinuteUtc: 0 },
-    ],
-    daysOff: [],
-    lessonLengthMin: 45,
-    bufferMin: 15,
-    maxPerDay: 6,
-    active: true,
-  },
+export const DEFAULT_WEEKLY_AVAILABILITY = [
+  { dayOfWeek: 1, startHourUtc: 9, startMinuteUtc: 0 },
+  { dayOfWeek: 1, startHourUtc: 14, startMinuteUtc: 0 },
+  { dayOfWeek: 2, startHourUtc: 9, startMinuteUtc: 0 },
+  { dayOfWeek: 2, startHourUtc: 15, startMinuteUtc: 0 },
+  { dayOfWeek: 3, startHourUtc: 10, startMinuteUtc: 0 },
+  { dayOfWeek: 4, startHourUtc: 9, startMinuteUtc: 0 },
+  { dayOfWeek: 5, startHourUtc: 10, startMinuteUtc: 0 },
 ];
+
+export function teacherInviteDocId(email: string): string {
+  return email.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+}
 
 export const DEFAULT_SETTINGS: Omit<PortalSettings, 'updatedAt'> = {
   currency: 'USD',
@@ -146,30 +118,6 @@ export async function ensurePortalSeeded(isAdminUser: boolean): Promise<void> {
         });
       }
 
-      for (const plan of DEFAULT_PLANS) {
-        const planRef = doc(db, 'portal_plans', plan.id);
-        const snap = await getDoc(planRef);
-        if (!snap.exists()) {
-          await setDoc(planRef, {
-            ...plan,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }
-      }
-
-      for (const teacher of DEFAULT_TEACHERS) {
-        const teacherRef = doc(db, 'portal_teachers', teacher.uid);
-        const snap = await getDoc(teacherRef);
-        if (!snap.exists()) {
-          await setDoc(teacherRef, {
-            ...teacher,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }
-      }
-
       const couponRef = doc(db, 'portal_coupons', 'MURAHO10');
       const couponSnap = await getDoc(couponRef);
       if (!couponSnap.exists()) {
@@ -181,24 +129,6 @@ export async function ensurePortalSeeded(isAdminUser: boolean): Promise<void> {
           usedCount: 0,
           perPersonLimit: 1,
           active: true,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-
-      const resRef = doc(db, 'portal_resources', 'res-starter-guide');
-      const resSnap = await getDoc(resRef);
-      if (!resSnap.exists()) {
-        await setDoc(resRef, {
-          type: 'pdf',
-          title: 'Kinyarwanda Foundations: Greetings & Noun Classes',
-          description: 'Essential Level 1 reference sheet with dialogues and noun class patterns.',
-          fileKey: 'kinyarwanda-foundations-guide.pdf',
-          level: 'Level 1',
-          topic: 'Greetings',
-          uploaderId: 'teacher-aline-mukamana',
-          uploaderName: 'Aline Mukamana',
-          publicToPaid: true,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -216,10 +146,36 @@ export async function fetchPublicPlans(): Promise<PortalPlan[]> {
     const q = query(collection(db, 'portal_plans'), where('active', '==', true));
     const snap = await getDocs(q);
     if (!snap.empty) {
-      return snap.docs.map((d) => d.data() as PortalPlan);
+      const livePlans = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id } as PortalPlan))
+        .filter((p) => p.isPublicEnrolment !== false);
+      if (livePlans.length > 0) return livePlans;
     }
   } catch {
-    // Fallback to seeded default plan before first admin login populates Firestore
+    // Fallback to starter plan if offline or unpopulated yet
   }
   return DEFAULT_PLANS;
+}
+
+export async function fetchAllActivePlans(): Promise<PortalPlan[]> {
+  try {
+    const q = query(collection(db, 'portal_plans'), where('active', '==', true));
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as PortalPlan));
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
+export async function fetchActiveTeachers(): Promise<TeacherProfile[]> {
+  try {
+    const q = query(collection(db, 'portal_teachers'), where('active', '==', true));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => d.data() as TeacherProfile);
+  } catch {
+    return [];
+  }
 }

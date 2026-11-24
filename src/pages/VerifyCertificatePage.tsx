@@ -23,8 +23,8 @@ export function VerifyCertificatePage() {
   }, [code]);
 
   return (
-    <div className="max-w-xl mx-auto px-4 sm:px-6 py-16">
-      <div className="rounded-[24px] border border-[#084F4E]/15 bg-white p-8 sm:p-10 text-center shadow-sm">
+    <div className="max-w-xl mx-auto px-4 sm:px-6 py-8 sm:py-16">
+      <div className="rounded-[24px] border border-[#084F4E]/15 bg-white p-6 sm:p-10 text-center shadow-sm">
         <div className="w-14 h-14 rounded-2xl bg-[#E8C97A]/30 text-[#084F4E] flex items-center justify-center mx-auto mb-5">
           <Award className="w-7 h-7" />
         </div>
@@ -37,7 +37,7 @@ export function VerifyCertificatePage() {
               <CheckCircle2 className="w-4 h-4" />
               <span>Verified Ijwi Certificate</span>
             </div>
-            <h1 className="font-display text-3xl font-semibold text-[#084F4E]">
+            <h1 className="font-display text-2xl sm:text-3xl font-semibold text-[#084F4E]">
               {cert.learnerName}
             </h1>
             <p className="text-base text-[#1F2A2A]">

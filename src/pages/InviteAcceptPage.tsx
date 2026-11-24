@@ -119,10 +119,16 @@ export function InviteAcceptPage() {
         updatedAt: serverTimestamp(),
       });
 
-      // Activate learner if owner's invoice is paid
+      // Activate learner if owner's invoice is paid and inherit team's applied plans
+      const teamPlanIds =
+        teamData.assignedPlanIds && teamData.assignedPlanIds.length > 0
+          ? teamData.assignedPlanIds
+          : [teamData.planId];
+
       await updateDoc(doc(db, 'users', activeUser.uid), {
         teamId: invite.teamId,
-        teacherId: teacher.uid,
+        ...(teacher.uid ? { teacherId: teacher.uid } : {}),
+        assignedPlanIds: teamPlanIds,
         accessActive: Boolean(teamData.accessActive),
         updatedAt: serverTimestamp(),
       });
@@ -163,8 +169,8 @@ export function InviteAcceptPage() {
   }
 
   return (
-    <div className="max-w-xl mx-auto px-4 sm:px-6 py-16">
-      <div className="rounded-[24px] border border-[#084F4E]/15 bg-white p-8 sm:p-10 shadow-sm text-center">
+    <div className="max-w-xl mx-auto px-4 sm:px-6 py-8 sm:py-16">
+      <div className="rounded-[24px] border border-[#084F4E]/15 bg-white p-6 sm:p-10 shadow-sm text-center">
         <div className="w-12 h-12 rounded-2xl bg-[#E6F4F4] text-[#084F4E] flex items-center justify-center mx-auto mb-5">
           <Users className="w-6 h-6" />
         </div>
@@ -193,7 +199,7 @@ export function InviteAcceptPage() {
           </div>
         ) : invite ? (
           <div className="space-y-5">
-            <h1 className="font-display text-3xl font-semibold text-[#084F4E]">
+            <h1 className="font-display text-2xl sm:text-3xl font-semibold text-[#084F4E]">
               Join {invite.teamName}
             </h1>
             <p className="text-sm text-[#3F4F4F] leading-relaxed">
@@ -208,7 +214,7 @@ export function InviteAcceptPage() {
               type="button"
               disabled={joining}
               onClick={() => void handleAccept()}
-              className="w-full py-3.5 px-6 rounded-2xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] transition-colors disabled:opacity-60"
+              className="w-full min-h-[46px] py-3.5 px-6 rounded-2xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] transition-colors disabled:opacity-60"
             >
               {joining
                 ? 'Joining team...'

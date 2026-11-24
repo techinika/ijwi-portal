@@ -195,35 +195,35 @@ export function HomePage() {
 
   return (
     <div className="bg-white">
-      {/* Hero section — 2-column balanced split */}
-      <section className="max-w-6xl mx-auto px-4 sm:px-6 pt-10 pb-12 sm:pt-14 sm:pb-16">
-        <div className="grid lg:grid-cols-12 gap-8 lg:gap-12 items-stretch">
+      {/* Hero section — mobile-first stack into 2-column balanced split */}
+      <section className="max-w-6xl mx-auto px-4 sm:px-6 pt-6 pb-8 sm:pt-14 sm:pb-16">
+        <div className="grid lg:grid-cols-12 gap-6 lg:gap-12 items-stretch">
           <div className="lg:col-span-7 flex flex-col justify-center">
-            <p className="text-sm font-medium text-[#0E7C7B] mb-3">
+            <p className="text-xs sm:text-sm font-medium text-[#0E7C7B] mb-2 sm:mb-3">
               Muraho · Kinyarwanda Classes at Ijwi
             </p>
-            <h1 className="font-display text-4xl sm:text-5xl font-semibold text-[#084F4E] tracking-tight leading-[1.12] [text-wrap:balance] mb-5">
+            <h1 className="font-display text-3xl sm:text-5xl font-semibold text-[#084F4E] tracking-tight leading-[1.12] [text-wrap:balance] mb-4 sm:mb-5">
               Learn Kinyarwanda with a dedicated teacher and warm study circle.
             </h1>
-            <p className="text-base sm:text-lg text-[#3F4F4F] leading-relaxed max-w-xl mb-8">
+            <p className="text-sm sm:text-lg text-[#3F4F4F] leading-relaxed max-w-xl mb-6 sm:mb-8">
               Choose your plan below, enrol for yourself or your team, and receive an instant invoice you can pay now or later from your profile.
             </p>
-            <div className="flex flex-wrap items-center gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
               <a
                 href="#enrol"
-                className="inline-flex items-center gap-2 px-6 py-3.5 rounded-2xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] transition-colors"
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-2xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] transition-colors"
               >
                 <span>Start enrolment</span>
                 <ArrowRight className="w-4 h-4" />
               </a>
-              <span className="text-sm text-[#3F4F4F]">
+              <span className="text-xs sm:text-sm text-[#3F4F4F] text-center sm:text-left">
                 From $40 per person · Team discounts up to 50%
               </span>
             </div>
           </div>
 
           <div className="lg:col-span-5">
-            <div className="h-full min-h-[260px] rounded-[24px] overflow-hidden border border-[#084F4E]/10 bg-[#E6F4F4]">
+            <div className="h-full min-h-[210px] sm:min-h-[260px] rounded-[24px] overflow-hidden border border-[#084F4E]/10 bg-[#E6F4F4]">
               <img
                 src="/src/assets/images/hero_kinyarwanda_study_1795519553630.jpg"
                 alt="Sunlit study desk overlooking green Rwandan hills with Kinyarwanda notes"
@@ -236,7 +236,7 @@ export function HomePage() {
       </section>
 
       {/* Enrolment Flow */}
-      <section id="enrol" className="border-t border-[#084F4E]/10 bg-[#FAFBFB] py-12 sm:py-16">
+      <section id="enrol" className="border-t border-[#084F4E]/10 bg-[#FAFBFB] py-10 pb-28 sm:py-16 lg:pb-16">
         <div className="max-w-6xl mx-auto px-4 sm:px-6">
           <div className="grid lg:grid-cols-12 gap-8 items-start">
             {/* Left 7 columns: Steps 1 to 3 */}
@@ -266,14 +266,28 @@ export function HomePage() {
                           }`}
                         >
                           <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2">
-                            <h3 className="font-display text-xl font-semibold text-[#084F4E]">
-                              {plan.name}
-                            </h3>
+                            <div>
+                              <h3 className="font-display text-xl font-semibold text-[#084F4E]">
+                                {plan.name}
+                              </h3>
+                              {(plan.level || plan.teacherName) && (
+                                <p className="text-xs font-medium text-[#0E7C7B] mt-0.5">
+                                  {[plan.level, plan.teacherName ? `By ${plan.teacherName}` : '']
+                                    .filter(Boolean)
+                                    .join(' · ')}
+                                </p>
+                              )}
+                            </div>
                             <span className="text-xl font-semibold text-[#084F4E] tabular-nums">
                               {formatMoney(plan.unitPriceCents, plan.currency)}{' '}
                               <span className="text-sm font-normal text-[#3F4F4F]">/ person</span>
                             </span>
                           </div>
+                          {plan.objective && (
+                            <p className="text-xs text-[#084F4E] bg-[#E6F4F4]/60 rounded-xl px-3.5 py-2 mb-3 leading-relaxed">
+                              <strong>Objective:</strong> {plan.objective}
+                            </p>
+                          )}
                           <p className="text-sm text-[#3F4F4F] mb-4 leading-relaxed">
                             {plan.description}
                           </p>
@@ -448,7 +462,7 @@ export function HomePage() {
                   >
                     Coupon code (optional)
                   </label>
-                  <div className="flex gap-2">
+                  <div className="flex flex-col sm:flex-row gap-2">
                     <input
                       id="coupon-code"
                       type="text"
@@ -456,12 +470,12 @@ export function HomePage() {
                       placeholder="e.g. MURAHO10"
                       value={couponInput}
                       onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
-                      className="flex-1 px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm uppercase"
+                      className="flex-1 min-h-[42px] px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm uppercase"
                     />
                     <button
                       type="button"
                       onClick={() => void handleApplyCoupon()}
-                      className="px-4 py-2.5 rounded-xl border border-[#084F4E]/25 text-sm font-medium text-[#084F4E] hover:bg-[#E6F4F4] transition-colors whitespace-nowrap shrink-0"
+                      className="w-full sm:w-auto min-h-[42px] px-4 py-2.5 rounded-xl border border-[#084F4E]/25 text-sm font-medium text-[#084F4E] hover:bg-[#E6F4F4] transition-colors whitespace-nowrap shrink-0"
                     >
                       Apply
                     </button>
@@ -557,6 +571,32 @@ export function HomePage() {
           </div>
         </div>
       </section>
+
+      {/* Mobile sticky summary bar */}
+      {selectedPlan && quote && (
+        <div className="lg:hidden fixed bottom-0 inset-x-0 z-30 border-t border-[#084F4E]/15 bg-white/95 backdrop-blur px-4 py-3 flex items-center justify-between gap-3 shadow-lg">
+          <div className="min-w-0">
+            <p className="text-[11px] text-[#3F4F4F] truncate">
+              {quote.seats} {quote.seats === 1 ? 'person' : 'people'} · {selectedPlan.name}
+            </p>
+            <p className="font-display text-xl font-semibold text-[#084F4E] tabular-nums">
+              {formatMoney(quote.totalCents, quote.currency)}
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => void handleProceed()}
+            className="min-h-[42px] px-4 py-2.5 rounded-xl bg-[#084F4E] text-white text-xs font-semibold hover:bg-[#0E7C7B] whitespace-nowrap shrink-0 disabled:opacity-60"
+          >
+            {submitting
+              ? 'Creating...'
+              : portalUser || firebaseUser
+                ? 'Create invoice'
+                : 'Continue with Google'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

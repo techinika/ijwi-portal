@@ -47,6 +47,20 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'active';
     }
 
+    function teacherInviteDocId() {
+      return request.auth.token.email.lower().replace('[^a-z0-9_\\-]', '_');
+    }
+
+    function hasValidTeacherInvite() {
+      return isSignedIn() &&
+        request.auth.token.email is string &&
+        exists(/databases/$(database)/documents/portal_teacher_invites/$(teacherInviteDocId())) &&
+        get(/databases/$(database)/documents/portal_teacher_invites/$(teacherInviteDocId())).data.revoked == false &&
+        get(/databases/$(database)/documents/portal_teacher_invites/$(teacherInviteDocId())).data.email.lower() == request.auth.token.email.lower() &&
+        (!('claimedBy' in get(/databases/$(database)/documents/portal_teacher_invites/$(teacherInviteDocId())).data) ||
+          get(/databases/$(database)/documents/portal_teacher_invites/$(teacherInviteDocId())).data.claimedBy == request.auth.uid);
+    }
+
     // Connection check doc
     match /test/{docId} {
       allow get: if isSignedIn() && isValidId(docId);
@@ -55,7 +69,7 @@ service cloud.firestore {
     // Users collection (shared with Ijwi Learn)
     function isValidUser(data) {
       return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'timezone', 'status', 'accessActive', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['uid', 'email', 'displayName', 'photoUrl', 'role', 'timezone', 'organisation', 'status', 'teamId', 'groupId', 'teacherId', 'accessActive', 'isTeamOwner', 'placementLevel', 'noShowCount', 'lateCancelCount', 'adminNote', 'emailPrefs', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'photoUrl', 'role', 'timezone', 'organisation', 'status', 'teamId', 'groupId', 'teacherId', 'assignedPlanIds', 'accessActive', 'isTeamOwner', 'placementLevel', 'noShowCount', 'lateCancelCount', 'adminNote', 'emailPrefs', 'createdAt', 'updatedAt']) &&
         isValidId(data.uid) &&
         data.email is string && data.email.size() <= 254 &&
         data.displayName is string && data.displayName.size() <= 120 &&
@@ -67,11 +81,12 @@ service cloud.firestore {
         (!('teamId' in data) || (data.teamId is string && data.teamId.size() <= 128)) &&
         (!('groupId' in data) || (data.groupId is string && data.groupId.size() <= 128)) &&
         (!('teacherId' in data) || (data.teacherId is string && data.teacherId.size() <= 128)) &&
+        (!('assignedPlanIds' in data) || (data.assignedPlanIds is list && data.assignedPlanIds.size() <= 20)) &&
         data.accessActive is bool &&
         (!('isTeamOwner' in data) || data.isTeamOwner is bool) &&
         (!('placementLevel' in data) || (data.placementLevel is string && data.placementLevel.size() <= 60)) &&
-        (!('noShowCount' in data) || data.noShowCount is int) &&
-        (!('lateCancelCount' in data) || data.lateCancelCount is int) &&
+        (!('noShowCount' in data) || (data.noShowCount is int && data.noShowCount >= 0 && data.noShowCount <= 1000)) &&
+        (!('lateCancelCount' in data) || (data.lateCancelCount is int && data.lateCancelCount >= 0 && data.lateCancelCount <= 1000)) &&
         (!('adminNote' in data) || (data.adminNote is string && data.adminNote.size() <= 500)) &&
         (!('emailPrefs' in data) || data.emailPrefs is map) &&
         data.createdAt is timestamp &&
@@ -87,14 +102,19 @@ service cloud.firestore {
       allow list: if isBootstrapAdmin() || (
         isSignedIn() && (
           resource.data.uid == request.auth.uid ||
-          resource.data.teacherId == request.auth.uid
+          resource.data.teacherId == request.auth.uid ||
+          isAdmin()
         )
       );
       allow create: if isValidId(uid) && isSignedIn() && isValidUser(incoming()) &&
         incoming().uid == request.auth.uid &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time && (
-          isBootstrapAdmin() || (
+          isBootstrapAdmin() ||
+          (hasValidTeacherInvite() &&
+            incoming().role == 'teacher' &&
+            incoming().accessActive == true &&
+            incoming().status == 'active') || (
             incoming().role == 'student' &&
             incoming().accessActive == false &&
             incoming().status == 'active'
@@ -108,9 +128,19 @@ service cloud.firestore {
           (request.auth.uid == uid &&
             incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'timezone', 'organisation', 'placementLevel', 'emailPrefs', 'updatedAt'])) ||
           (request.auth.uid == uid &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['teamId', 'groupId', 'teacherId', 'accessActive', 'isTeamOwner', 'organisation', 'updatedAt']) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['lateCancelCount', 'updatedAt'])) ||
+          (request.auth.uid == uid &&
+            hasValidTeacherInvite() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['role', 'accessActive', 'updatedAt']) &&
+            incoming().role == 'teacher' &&
+            incoming().accessActive == true) ||
+          (request.auth.uid == uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['teamId', 'groupId', 'teacherId', 'assignedPlanIds', 'accessActive', 'isTeamOwner', 'organisation', 'updatedAt']) &&
             incoming().role == existing().role &&
             incoming().status == existing().status) ||
+          (isTeacher() &&
+            existing().teacherId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['assignedPlanIds', 'noShowCount', 'updatedAt'])) ||
           (isSignedIn() && existing().teamId is string && existing().teamId.size() > 0 &&
             exists(/databases/$(database)/documents/portal_teams/$(existing().teamId)) &&
             get(/databases/$(database)/documents/portal_teams/$(existing().teamId)).data.ownerId == request.auth.uid &&
@@ -120,30 +150,37 @@ service cloud.firestore {
       allow delete: if isValidId(uid) && isSignedIn() && (request.auth.uid == uid || isAdmin());
     }
 
-    // Plans
+    // Plans (created by teachers and admins, each with an explicit objective)
     function isValidPlan(data) {
-      return data.keys().hasAll(['id', 'name', 'description', 'unitPriceCents', 'currency', 'included', 'learningPath', 'active', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'name', 'description', 'unitPriceCents', 'currency', 'included', 'learningPath', 'active', 'createdAt', 'updatedAt']) &&
+      return data.keys().hasAll(['id', 'name', 'objective', 'description', 'unitPriceCents', 'currency', 'included', 'learningPath', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'objective', 'description', 'level', 'teacherId', 'teacherName', 'unitPriceCents', 'currency', 'included', 'learningPath', 'isPublicEnrolment', 'active', 'createdAt', 'updatedAt']) &&
         isValidId(data.id) &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.objective is string && data.objective.size() >= 1 && data.objective.size() <= 600 &&
         data.description is string && data.description.size() <= 600 &&
+        (!('level' in data) || (data.level is string && data.level.size() <= 60)) &&
+        (!('teacherId' in data) || (data.teacherId is string && data.teacherId.size() <= 128)) &&
+        (!('teacherName' in data) || (data.teacherName is string && data.teacherName.size() <= 120)) &&
         data.unitPriceCents is int && data.unitPriceCents >= 0 &&
         data.currency is string && data.currency.size() <= 8 &&
         data.included is list && data.included.size() <= 16 &&
         data.learningPath is list && data.learningPath.size() <= 20 &&
+        (!('isPublicEnrolment' in data) || data.isPublicEnrolment is bool) &&
         data.active is bool &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
 
     match /portal_plans/{planId} {
-      allow get: if isValidId(planId) && (resource.data.active == true || isAdmin());
-      allow list: if resource.data.active == true || isBootstrapAdmin();
-      allow create: if isValidId(planId) && isAdmin() && isValidPlan(incoming()) &&
-        incoming().createdAt == request.time && incoming().updatedAt == request.time;
-      allow update: if isValidId(planId) && isAdmin() && isValidPlan(incoming()) &&
+      allow get: if isValidId(planId) && (resource.data.active == true || isTeacher() || isAdmin());
+      allow list: if resource.data.active == true || (isSignedIn() && resource.data.teacherId == request.auth.uid) || isTeacher() || isBootstrapAdmin();
+      allow create: if isValidId(planId) && (isTeacher() || isAdmin()) && isValidPlan(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time &&
+        (isAdmin() || incoming().teacherId == request.auth.uid);
+      allow update: if isValidId(planId) && (isAdmin() || (isTeacher() && existing().teacherId == request.auth.uid)) &&
+        isValidPlan(incoming()) &&
         incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time;
-      allow delete: if isValidId(planId) && isAdmin();
+      allow delete: if isValidId(planId) && (isAdmin() || (isTeacher() && resource.data.teacherId == request.auth.uid));
     }
 
     // Invoices
@@ -184,7 +221,7 @@ service cloud.firestore {
 
     match /portal_invoices/{invoiceId} {
       allow get: if isValidId(invoiceId) && isSignedIn() && (resource.data.payerId == request.auth.uid || isAdmin());
-      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.payerId == request.auth.uid);
+      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.payerId == request.auth.uid) || isAdmin();
       allow create: if isValidId(invoiceId) && isSignedIn() && isValidInvoice(incoming()) &&
         incoming().createdAt == request.time && incoming().updatedAt == request.time &&
         (isAdmin() || (incoming().payerId == request.auth.uid && incoming().status == 'unpaid'));
@@ -203,7 +240,7 @@ service cloud.firestore {
       match /payments/{paymentId} {
         allow get: if isValidId(invoiceId) && isValidId(paymentId) && isSignedIn() &&
           (get(/databases/$(database)/documents/portal_invoices/$(invoiceId)).data.payerId == request.auth.uid || isAdmin());
-        allow list: if isBootstrapAdmin();
+        allow list: if isBootstrapAdmin() || isAdmin();
         allow create: if isValidId(invoiceId) && isValidId(paymentId) && isSignedIn() &&
           (get(/databases/$(database)/documents/portal_invoices/$(invoiceId)).data.payerId == request.auth.uid || isAdmin()) &&
           incoming().keys().hasAll(['trackingId', 'merchantRef', 'status', 'amountCents', 'currency', 'method', 'createdAt']) &&
@@ -222,11 +259,12 @@ service cloud.firestore {
     // Teams & Members
     function isValidTeam(data) {
       return data.keys().hasAll(['ownerId', 'ownerName', 'name', 'planId', 'seatsTotal', 'seatsUsed', 'accessActive', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['ownerId', 'ownerName', 'name', 'planId', 'seatsTotal', 'seatsUsed', 'invoiceIds', 'accessActive', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'ownerName', 'name', 'planId', 'assignedPlanIds', 'seatsTotal', 'seatsUsed', 'invoiceIds', 'accessActive', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
         data.ownerName is string && data.ownerName.size() <= 120 &&
         data.name is string && data.name.size() <= 120 &&
         data.planId is string && data.planId.size() <= 128 &&
+        (!('assignedPlanIds' in data) || (data.assignedPlanIds is list && data.assignedPlanIds.size() <= 20)) &&
         data.seatsTotal is int && data.seatsTotal >= 1 && data.seatsTotal <= 500 &&
         data.seatsUsed is int && data.seatsUsed >= 0 && data.seatsUsed <= 500 &&
         (!('invoiceIds' in data) || (data.invoiceIds is list && data.invoiceIds.size() <= 50)) &&
@@ -239,9 +277,10 @@ service cloud.firestore {
       allow get: if isValidId(teamId) && isSignedIn() && (
         resource.data.ownerId == request.auth.uid ||
         exists(/databases/$(database)/documents/portal_teams/$(teamId)/members/$(request.auth.uid)) ||
+        isTeacher() ||
         isAdmin()
       );
-      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow list: if isBootstrapAdmin() || isAdmin() || isTeacher() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
       allow create: if isValidId(teamId) && isSignedIn() && isValidTeam(incoming()) &&
         incoming().ownerId == request.auth.uid &&
         incoming().createdAt == request.time && incoming().updatedAt == request.time;
@@ -250,6 +289,7 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
+          (isTeacher() && incoming().diff(existing()).affectedKeys().hasOnly(['assignedPlanIds', 'updatedAt'])) ||
           (existing().ownerId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'seatsTotal', 'seatsUsed', 'invoiceIds', 'accessActive', 'updatedAt'])) ||
           (incoming().diff(existing()).affectedKeys().hasOnly(['seatsUsed', 'updatedAt']))
@@ -262,7 +302,7 @@ service cloud.firestore {
           get(/databases/$(database)/documents/portal_teams/$(teamId)).data.ownerId == request.auth.uid ||
           isAdmin()
         );
-        allow list: if isBootstrapAdmin() || (
+        allow list: if isBootstrapAdmin() || isAdmin() || (
           isSignedIn() && resource.data.ownerId == request.auth.uid
         );
         allow create: if isValidId(teamId) && isValidId(memberUid) && isSignedIn() &&
@@ -307,7 +347,7 @@ service cloud.firestore {
 
     match /portal_invites/{inviteId} {
       allow get: if isValidId(inviteId);
-      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow list: if isBootstrapAdmin() || isAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
       allow create: if isValidId(inviteId) && isSignedIn() && isValidInvite(incoming()) &&
         incoming().ownerId == request.auth.uid &&
         incoming().revoked == false &&
@@ -347,7 +387,7 @@ service cloud.firestore {
         resource.data.teacherId == request.auth.uid ||
         isAdmin()
       );
-      allow list: if isBootstrapAdmin() || (isSignedIn() && (
+      allow list: if isBootstrapAdmin() || isAdmin() || (isSignedIn() && (
         request.auth.uid in resource.data.memberIds ||
         resource.data.teacherId == request.auth.uid ||
         resource.data.capacity <= 12
@@ -363,11 +403,12 @@ service cloud.firestore {
       allow delete: if isValidId(groupId) && isAdmin();
     }
 
-    // Teachers (non-PII public bio & availability)
+    // Teachers (dynamic profiles created by admin) + non-PII busySlots
     function isValidTeacher(data) {
       return data.keys().hasAll(['uid', 'displayName', 'photoUrl', 'bio', 'availability', 'daysOff', 'lessonLengthMin', 'bufferMin', 'maxPerDay', 'active', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['uid', 'displayName', 'photoUrl', 'bio', 'availability', 'daysOff', 'lessonLengthMin', 'bufferMin', 'maxPerDay', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'photoUrl', 'bio', 'availability', 'daysOff', 'lessonLengthMin', 'bufferMin', 'maxPerDay', 'active', 'pendingClaim', 'createdAt', 'updatedAt']) &&
         isValidId(data.uid) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 254)) &&
         data.displayName is string && data.displayName.size() <= 120 &&
         data.photoUrl is string && data.photoUrl.size() <= 512 &&
         data.bio is string && data.bio.size() <= 600 &&
@@ -377,24 +418,84 @@ service cloud.firestore {
         data.bufferMin is int && data.bufferMin >= 0 && data.bufferMin <= 60 &&
         data.maxPerDay is int && data.maxPerDay >= 1 && data.maxPerDay <= 20 &&
         data.active is bool &&
+        (!('pendingClaim' in data) || data.pendingClaim is bool) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
 
     match /portal_teachers/{uid} {
       allow get: if isValidId(uid) && isSignedIn();
-      allow list: if isSignedIn() && (resource.data.active == true || isBootstrapAdmin());
-      allow create: if isValidId(uid) && isAdmin() && isValidTeacher(incoming()) &&
-        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow list: if isSignedIn() && (resource.data.active == true || isAdmin() || isTeacher());
+      allow create: if isValidId(uid) && isValidTeacher(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isSignedIn() && request.auth.uid == uid && (isTeacher() || hasValidTeacherInvite()))
+        );
       allow update: if isValidId(uid) && isSignedIn() && isValidTeacher(incoming()) &&
         incoming().uid == existing().uid &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
           (request.auth.uid == uid && isTeacher() &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['bio', 'availability', 'daysOff', 'lessonLengthMin', 'bufferMin', 'maxPerDay', 'updatedAt']))
+            incoming().diff(existing()).affectedKeys().hasOnly(['bio', 'photoUrl', 'displayName', 'availability', 'daysOff', 'lessonLengthMin', 'bufferMin', 'maxPerDay', 'updatedAt'])) ||
+          (hasValidTeacherInvite() && existing().pendingClaim == true &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['active', 'pendingClaim', 'updatedAt']))
         );
       allow delete: if isValidId(uid) && isAdmin();
+
+      match /busySlots/{slotId} {
+        allow get, list: if isValidId(uid) && isSignedIn();
+        allow create, update: if isValidId(uid) && isValidId(slotId) && isSignedIn() &&
+          (isActiveLearner() || isTeacher() || isAdmin()) &&
+          incoming().keys().hasAll(['startUtc', 'endUtc', 'status', 'updatedAt']) &&
+          incoming().keys().hasOnly(['startUtc', 'endUtc', 'status', 'updatedAt']) &&
+          incoming().startUtc is string && incoming().startUtc.size() <= 64 &&
+          incoming().endUtc is string && incoming().endUtc.size() <= 64 &&
+          incoming().status in ['confirmed', 'rescheduled', 'cancelled', 'completed', 'no_show', 'late_cancel'] &&
+          incoming().updatedAt == request.time;
+        allow delete: if isValidId(uid) && isValidId(slotId) && isAdmin();
+      }
+    }
+
+    // Teacher Invites (admin creates by email; teacher claims on first Google sign-in)
+    function isValidTeacherInvite(data) {
+      return data.keys().hasAll(['email', 'displayName', 'photoUrl', 'bio', 'teacherProfileId', 'lessonLengthMin', 'bufferMin', 'maxPerDay', 'createdBy', 'revoked', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['email', 'displayName', 'photoUrl', 'bio', 'teacherProfileId', 'lessonLengthMin', 'bufferMin', 'maxPerDay', 'createdBy', 'claimedBy', 'revoked', 'createdAt', 'updatedAt']) &&
+        data.email is string && data.email.size() <= 254 &&
+        data.displayName is string && data.displayName.size() <= 120 &&
+        data.photoUrl is string && data.photoUrl.size() <= 512 &&
+        data.bio is string && data.bio.size() <= 600 &&
+        isValidId(data.teacherProfileId) &&
+        data.lessonLengthMin is int && data.lessonLengthMin >= 15 && data.lessonLengthMin <= 180 &&
+        data.bufferMin is int && data.bufferMin >= 0 && data.bufferMin <= 60 &&
+        data.maxPerDay is int && data.maxPerDay >= 1 && data.maxPerDay <= 20 &&
+        isValidId(data.createdBy) &&
+        (!('claimedBy' in data) || isValidId(data.claimedBy)) &&
+        data.revoked is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_teacher_invites/{inviteId} {
+      allow get: if isValidId(inviteId) && isSignedIn() && (
+        isAdmin() ||
+        inviteId == teacherInviteDocId()
+      );
+      allow list: if isBootstrapAdmin() || isAdmin();
+      allow create: if isValidId(inviteId) && isAdmin() && isValidTeacherInvite(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().revoked == false &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(inviteId) && isSignedIn() && isValidTeacherInvite(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (inviteId == teacherInviteDocId() &&
+            existing().revoked == false &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['claimedBy', 'updatedAt']) &&
+            incoming().claimedBy == request.auth.uid)
+        );
+      allow delete: if isValidId(inviteId) && isAdmin();
     }
 
     // Bookings
@@ -420,7 +521,7 @@ service cloud.firestore {
         resource.data.teacherId == request.auth.uid ||
         isAdmin()
       );
-      allow list: if isBootstrapAdmin() || (isSignedIn() && (
+      allow list: if isBootstrapAdmin() || isAdmin() || (isSignedIn() && (
         resource.data.studentId == request.auth.uid ||
         resource.data.teacherId == request.auth.uid
       ));
@@ -463,7 +564,7 @@ service cloud.firestore {
         isTeacher() ||
         isAdmin()
       );
-      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow list: if isBootstrapAdmin() || isAdmin() || isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
       allow create, update: if isValidId(studentUid) && isValidId(lessonId) && isSignedIn() &&
         isValidLessonProgress(incoming()) &&
         incoming().studentId == studentUid &&
@@ -473,10 +574,10 @@ service cloud.firestore {
       allow delete: if isValidId(studentUid) && isValidId(lessonId) && isAdmin();
     }
 
-    // Resources metadata (binary files stored privately & streamed via API)
+    // Resources metadata (binary files stored privately & streamed via API; can be applied to plans)
     function isValidResource(data) {
       return data.keys().hasAll(['type', 'title', 'level', 'topic', 'uploaderId', 'uploaderName', 'publicToPaid', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['type', 'title', 'description', 'fileKey', 'url', 'level', 'topic', 'uploaderId', 'uploaderName', 'publicToPaid', 'targetStudentIds', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['type', 'title', 'description', 'fileKey', 'url', 'level', 'topic', 'uploaderId', 'uploaderName', 'publicToPaid', 'planIds', 'targetStudentIds', 'createdAt', 'updatedAt']) &&
         data.type in ['pdf', 'video', 'link'] &&
         data.title is string && data.title.size() <= 160 &&
         (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
@@ -487,6 +588,7 @@ service cloud.firestore {
         isValidId(data.uploaderId) &&
         data.uploaderName is string && data.uploaderName.size() <= 120 &&
         data.publicToPaid is bool &&
+        (!('planIds' in data) || (data.planIds is list && data.planIds.size() <= 30)) &&
         (!('targetStudentIds' in data) || (data.targetStudentIds is list && data.targetStudentIds.size() <= 50)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
@@ -494,7 +596,11 @@ service cloud.firestore {
 
     match /portal_resources/{resourceId} {
       allow get: if isValidId(resourceId) && isSignedIn() && (isActiveLearner() || isTeacher() || isAdmin());
-      allow list: if isBootstrapAdmin() || (isSignedIn() && (resource.data.publicToPaid == true || resource.data.uploaderId == request.auth.uid));
+      allow list: if isBootstrapAdmin() || isAdmin() || isTeacher() || (isSignedIn() && (
+        resource.data.publicToPaid == true ||
+        resource.data.uploaderId == request.auth.uid ||
+        ('planIds' in resource.data && resource.data.planIds is list && resource.data.planIds.size() > 0)
+      ));
       allow create: if isValidId(resourceId) && isSignedIn() && (isTeacher() || isAdmin()) &&
         isValidResource(incoming()) &&
         incoming().uploaderId == request.auth.uid &&
@@ -506,7 +612,7 @@ service cloud.firestore {
 
       match /views/{viewId} {
         allow get: if isValidId(resourceId) && isValidId(viewId) && (isTeacher() || isAdmin());
-        allow list: if isBootstrapAdmin();
+        allow list: if isBootstrapAdmin() || isAdmin();
         allow create: if isValidId(resourceId) && isValidId(viewId) && isActiveLearner() &&
           incoming().keys().hasAll(['viewerId', 'viewerName', 'viewedAt']) &&
           incoming().keys().hasOnly(['viewerId', 'viewerName', 'viewedAt']) &&
@@ -517,10 +623,10 @@ service cloud.firestore {
       }
     }
 
-    // Group Sessions created by students
+    // Group Sessions (created by learners or teachers, optionally applied to learning plans)
     function isValidSession(data) {
       return data.keys().hasAll(['creatorId', 'creatorName', 'title', 'topic', 'startUtc', 'capacity', 'locationType', 'status', 'attendeeIds', 'attendeeNames', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['creatorId', 'creatorName', 'title', 'topic', 'description', 'startUtc', 'capacity', 'locationType', 'meetingLink', 'status', 'attendeeIds', 'attendeeNames', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['creatorId', 'creatorName', 'title', 'topic', 'description', 'startUtc', 'capacity', 'locationType', 'meetingLink', 'planIds', 'status', 'attendeeIds', 'attendeeNames', 'createdAt', 'updatedAt']) &&
         isValidId(data.creatorId) &&
         data.creatorName is string && data.creatorName.size() <= 120 &&
         data.title is string && data.title.size() <= 160 &&
@@ -530,6 +636,7 @@ service cloud.firestore {
         data.capacity is int && data.capacity >= 2 && data.capacity <= 30 &&
         data.locationType in ['platform', 'external'] &&
         (!('meetingLink' in data) || (data.meetingLink is string && data.meetingLink.size() <= 512)) &&
+        (!('planIds' in data) || (data.planIds is list && data.planIds.size() <= 20)) &&
         data.status in ['upcoming', 'cancelled', 'completed'] &&
         data.attendeeIds is list && data.attendeeIds.size() <= 30 &&
         data.attendeeNames is list && data.attendeeNames.size() <= 30 &&
@@ -539,12 +646,12 @@ service cloud.firestore {
 
     match /portal_sessions/{sessionId} {
       allow get: if isValidId(sessionId) && isSignedIn() && (isActiveLearner() || isTeacher() || isAdmin());
-      allow list: if isBootstrapAdmin() || (isSignedIn() && (
+      allow list: if isBootstrapAdmin() || isAdmin() || isTeacher() || (isSignedIn() && (
         resource.data.status == 'upcoming' ||
         resource.data.creatorId == request.auth.uid ||
         request.auth.uid in resource.data.attendeeIds
       ));
-      allow create: if isValidId(sessionId) && isActiveLearner() && isValidSession(incoming()) &&
+      allow create: if isValidId(sessionId) && (isActiveLearner() || isTeacher() || isAdmin()) && isValidSession(incoming()) &&
         incoming().creatorId == request.auth.uid &&
         incoming().status == 'upcoming' &&
         incoming().createdAt == request.time && incoming().updatedAt == request.time;
@@ -554,11 +661,11 @@ service cloud.firestore {
         incoming().updatedAt == request.time && (
           isAdmin() ||
           (existing().creatorId == request.auth.uid &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'title', 'topic', 'description', 'startUtc', 'meetingLink', 'updatedAt'])) ||
-          (isActiveLearner() && existing().status == 'upcoming' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'title', 'topic', 'description', 'startUtc', 'meetingLink', 'planIds', 'updatedAt'])) ||
+          ((isActiveLearner() || isTeacher()) && existing().status == 'upcoming' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['attendeeIds', 'attendeeNames', 'updatedAt']))
         );
-      allow delete: if isValidId(sessionId) && isAdmin();
+      allow delete: if isValidId(sessionId) && (isAdmin() || resource.data.creatorId == request.auth.uid);
     }
 
     // Coupons
@@ -581,7 +688,7 @@ service cloud.firestore {
 
     match /portal_coupons/{code} {
       allow get: if isValidId(code) && (resource.data.active == true || isAdmin());
-      allow list: if isBootstrapAdmin();
+      allow list: if isBootstrapAdmin() || isAdmin();
       allow create: if isValidId(code) && isAdmin() && isValidCoupon(incoming()) &&
         incoming().createdAt == request.time && incoming().updatedAt == request.time;
       allow update: if isValidId(code) && isSignedIn() && isValidCoupon(incoming()) &&
@@ -594,7 +701,7 @@ service cloud.firestore {
 
       match /redemptions/{uid} {
         allow get: if isValidId(code) && isValidId(uid) && isSignedIn() && (request.auth.uid == uid || isAdmin());
-        allow list: if isBootstrapAdmin();
+        allow list: if isBootstrapAdmin() || isAdmin();
         allow create, update: if isValidId(code) && isValidId(uid) && isSignedIn() && request.auth.uid == uid &&
           incoming().keys().hasAll(['uid', 'invoiceId', 'count', 'redeemedAt']) &&
           incoming().keys().hasOnly(['uid', 'invoiceId', 'count', 'redeemedAt']) &&
@@ -620,7 +727,7 @@ service cloud.firestore {
 
     match /portal_certificates/{certCode} {
       allow get: if isValidId(certCode);
-      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow list: if isBootstrapAdmin() || isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow create: if isValidId(certCode) && isSignedIn() && (isTeacher() || isAdmin() || request.auth.uid == incoming().userId) &&
         isValidCertificate(incoming()) && incoming().createdAt == request.time;
       allow update, delete: if isValidId(certCode) && isAdmin();
@@ -642,7 +749,7 @@ service cloud.firestore {
 
     match /portal_feedback/{feedbackId} {
       allow get: if isValidId(feedbackId) && isAdmin();
-      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow list: if isBootstrapAdmin() || isAdmin() || (isSignedIn() && resource.data.studentId == request.auth.uid);
       allow create: if isValidId(feedbackId) && isActiveLearner() && isValidFeedback(incoming()) &&
         incoming().studentId == request.auth.uid && incoming().createdAt == request.time;
       allow update, delete: if isValidId(feedbackId) && isAdmin();
@@ -651,7 +758,7 @@ service cloud.firestore {
     // Announcements
     match /portal_announcements/{announcementId} {
       allow get: if isValidId(announcementId) && isSignedIn();
-      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.active == true);
+      allow list: if isBootstrapAdmin() || isAdmin() || (isSignedIn() && resource.data.active == true);
       allow create: if isValidId(announcementId) && isAdmin() &&
         incoming().keys().hasAll(['title', 'body', 'audienceType', 'authorId', 'active', 'createdAt']) &&
         incoming().keys().hasOnly(['title', 'body', 'audienceType', 'audienceId', 'authorId', 'active', 'createdAt']) &&
@@ -665,7 +772,7 @@ service cloud.firestore {
     // Notifications per user
     match /portal_notifications/{uid}/items/{itemId} {
       allow get: if isValidId(uid) && isValidId(itemId) && isSignedIn() && (request.auth.uid == uid || isAdmin());
-      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow list: if isBootstrapAdmin() || isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow create: if isValidId(uid) && isValidId(itemId) && isSignedIn() &&
         incoming().keys().hasAll(['userId', 'title', 'body', 'type', 'read', 'createdAt']) &&
         incoming().keys().hasOnly(['userId', 'title', 'body', 'type', 'link', 'read', 'createdAt']) &&
@@ -682,7 +789,7 @@ service cloud.firestore {
     // Audit Log
     match /portal_auditLog/{logId} {
       allow get: if isValidId(logId) && isAdmin();
-      allow list: if isBootstrapAdmin();
+      allow list: if isBootstrapAdmin() || isAdmin();
       allow create: if isValidId(logId) && isSignedIn() &&
         incoming().keys().hasAll(['actorId', 'actorEmail', 'action', 'targetType', 'targetId', 'summary', 'createdAt']) &&
         incoming().keys().hasOnly(['actorId', 'actorEmail', 'action', 'targetType', 'targetId', 'summary', 'createdAt']) &&
@@ -696,7 +803,7 @@ service cloud.firestore {
     // Email Log
     match /portal_emailLog/{logId} {
       allow get: if isValidId(logId) && isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow list: if isBootstrapAdmin() || isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow create: if isValidId(logId) && isSignedIn() &&
         incoming().keys().hasAll(['userId', 'to', 'subject', 'type', 'status', 'previewText', 'createdAt']) &&
         incoming().keys().hasOnly(['userId', 'to', 'subject', 'type', 'status', 'previewText', 'createdAt']) &&
@@ -707,7 +814,7 @@ service cloud.firestore {
     // Settings & Counters
     match /portal_settings/{settingId} {
       allow get: if isValidId(settingId) && (settingId == 'portal' || isSignedIn());
-      allow list: if isBootstrapAdmin();
+      allow list: if isBootstrapAdmin() || isAdmin();
       allow create: if isValidId(settingId) && isSignedIn() && (
         isAdmin() ||
         (settingId == 'counters' &&

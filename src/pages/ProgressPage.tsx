@@ -109,16 +109,16 @@ export function ProgressPage() {
   const maxBar = Math.max(...bars, 4);
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 sm:py-12 space-y-8">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-12 space-y-6 sm:space-y-8">
       <div>
-        <h1 className="font-display text-3xl font-semibold text-[#084F4E]">Your progress</h1>
+        <h1 className="font-display text-2xl sm:text-3xl font-semibold text-[#084F4E]">Your progress</h1>
         <p className="text-sm text-[#3F4F4F] mt-1">
           Lessons completed, community practice, teacher feedback, and certificates.
         </p>
       </div>
 
       {/* Metrics Strip */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
         {[
           { label: 'Lessons done', value: String(doneCount) },
           { label: 'Sessions attended', value: String(sessionsCount + completedBookings.length) },
@@ -127,10 +127,10 @@ export function ProgressPage() {
         ].map((stat) => (
           <div
             key={stat.label}
-            className="rounded-2xl border border-[#084F4E]/12 bg-white p-5"
+            className="rounded-2xl border border-[#084F4E]/12 bg-white p-4 sm:p-5"
           >
             <p className="text-xs text-[#3F4F4F] mb-1">{stat.label}</p>
-            <p className="font-display text-2xl font-semibold text-[#084F4E] tabular-nums">
+            <p className="font-display text-xl sm:text-2xl font-semibold text-[#084F4E] tabular-nums">
               {stat.value}
             </p>
           </div>
@@ -138,12 +138,12 @@ export function ProgressPage() {
       </div>
 
       {/* Simple SVG Activity Chart */}
-      <section className="rounded-[24px] border border-[#084F4E]/12 bg-white p-6 sm:p-8">
+      <section className="rounded-[24px] border border-[#084F4E]/12 bg-white p-5 sm:p-8">
         <h2 className="font-display text-xl font-semibold text-[#084F4E] mb-4">
           Weekly study rhythm
         </h2>
         <div className="w-full overflow-x-auto">
-          <svg viewBox="0 0 600 160" className="w-full max-w-2xl h-40">
+          <svg viewBox="0 0 600 160" className="w-full min-w-[280px] max-w-2xl h-36 sm:h-40">
             {bars.map((val, idx) => {
               const barHeight = Math.round((val / maxBar) * 100);
               const x = idx * 96 + 24;
@@ -180,7 +180,7 @@ export function ProgressPage() {
           Certificates
         </h2>
         {certs.length === 0 ? (
-          <div className="rounded-[20px] border border-[#084F4E]/12 bg-[#FAFBFB] p-6 text-sm text-[#3F4F4F]">
+          <div className="rounded-[20px] border border-[#084F4E]/12 bg-[#FAFBFB] p-5 sm:p-6 text-sm text-[#3F4F4F]">
             Complete every lesson in a level on your Dashboard to earn a verifiable certificate with a QR code.
           </div>
         ) : (

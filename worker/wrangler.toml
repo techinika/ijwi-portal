@@ -23,5 +23,5 @@ crons = ["0 * * * *", "0 6 * * 1"]
 [vars]
 EMAIL_FROM = "Ijwi <noreply@mail.ijwi.me>"
 EMAIL_REPLY_TO = "learn@ijwi.me"
-FIREBASE_PROJECT_ID = "gen-lang-client-0294173474"
-FIRESTORE_DATABASE_ID = "ai-studio-4ec77555-d907-4da1-b5e0-73ee22ec31ec"
+FIREBASE_PROJECT_ID = "ijwi-learn"
+FIRESTORE_DATABASE_ID = "(default)"

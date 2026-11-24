@@ -323,7 +323,7 @@ export function createApiApp() {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     }
     if (req.method === 'OPTIONS') {
       res.status(204).end();
@@ -1106,6 +1106,38 @@ export function createApiApp() {
     res.setHeader('Content-Length', String(fileSize));
     res.setHeader('Content-Type', contentType);
     fs.createReadStream(resolved).pipe(res);
+  });
+
+  // Delete a private uploaded resource file (authenticated teacher/admin)
+  app.delete('/api/resources/file/:fileKey', requireAuth, async (req: AuthedRequest, res: Response) => {
+    const fileKey = String(req.params.fileKey || '');
+    if (!/^[a-zA-Z0-9._\-]+$/.test(fileKey)) {
+      res.status(400).json({ error: 'Invalid file key.' });
+      return;
+    }
+
+    const worker = getWorkerConfig();
+    if (worker) {
+      try {
+        await fetch(`${worker.baseUrl}/r2/objects/${encodeURIComponent(fileKey)}`, {
+          method: 'DELETE',
+          headers: { 'X-Ijwi-Worker-Secret': worker.sharedSecret },
+        });
+      } catch {
+        // continue local cleanup as well
+      }
+    }
+
+    const resolved = path.resolve(PRIVATE_UPLOAD_DIR, fileKey);
+    if (resolved.startsWith(PRIVATE_UPLOAD_DIR + path.sep) && fs.existsSync(resolved)) {
+      try {
+        fs.unlinkSync(resolved);
+      } catch {
+        // ignore if already removed
+      }
+    }
+
+    res.json({ ok: true, deleted: fileKey });
   });
 
   // Calendar .ics generator for bookings

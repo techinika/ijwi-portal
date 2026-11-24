@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   collection,
@@ -12,7 +12,7 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { Copy, Plus, Trash2, UserPlus, Mail } from 'lucide-react';
+import { Copy, Plus, Trash2, UserPlus, Mail, Target } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { apiFetch } from '../lib/api';
@@ -21,14 +21,15 @@ import {
   dispatchPortalEmail,
   removeTeamMember,
 } from '../lib/portalActions';
-import { DEFAULT_PLANS } from '../lib/seed';
-import { formatMoney, type PriceQuote } from '../shared/pricing';
+import { DEFAULT_PLANS, fetchAllActivePlans } from '../lib/seed';
+import { calculateEnrolmentQuote, formatMoney, type PriceQuote } from '../shared/pricing';
 import type { PortalInvite, PortalInvoice, PortalPlan, PortalTeam, TeamMember } from '../types/portal';
 
 export function TeamPage() {
   const { portalUser } = useAuth();
   const navigate = useNavigate();
   const [team, setTeam] = useState<PortalTeam | null>(null);
+  const [allPlans, setAllPlans] = useState<PortalPlan[]>(DEFAULT_PLANS);
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [invites, setInvites] = useState<PortalInvite[]>([]);
   const [latestLinks, setLatestLinks] = useState<Record<string, string>>({});
@@ -36,10 +37,16 @@ export function TeamPage() {
   const [creatingInvite, setCreatingInvite] = useState(false);
 
   const [addSeatsCount, setAddSeatsCount] = useState(2);
-  const [topUpQuote, setTopUpQuote] = useState<PriceQuote | null>(null);
+  const [serverTopUpQuote, setServerTopUpQuote] = useState<PriceQuote | null>(null);
   const [alreadyPaidCents, setAlreadyPaidCents] = useState(0);
   const [creatingTopUp, setCreatingTopUp] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    void fetchAllActivePlans().then((list) => {
+      if (list.length > 0) setAllPlans(list);
+    });
+  }, []);
 
   useEffect(() => {
     if (!portalUser?.teamId) return;
@@ -89,23 +96,53 @@ export function TeamPage() {
 
   const isOwner = Boolean(portalUser && team && team.ownerId === portalUser.uid);
 
+  const primaryTeamPlan = useMemo(() => {
+    if (!team) return DEFAULT_PLANS[0];
+    return allPlans.find((p) => p.id === team.planId) || allPlans[0] || DEFAULT_PLANS[0];
+  }, [team, allPlans]);
+
+  const appliedTeamPlans = useMemo(() => {
+    if (!team) return [];
+    const ids = new Set<string>(team.assignedPlanIds || []);
+    if (team.planId) ids.add(team.planId);
+    return allPlans.filter((p) => ids.has(p.id));
+  }, [team, allPlans]);
+
+  const localTopUpQuote = useMemo<PriceQuote | null>(() => {
+    if (!team || !isOwner) return null;
+    return calculateEnrolmentQuote({
+      unitPriceCents: primaryTeamPlan.unitPriceCents,
+      seats: addSeatsCount,
+      currency: primaryTeamPlan.currency,
+      existingSeats: team.seatsTotal,
+      alreadyPaidCents,
+    });
+  }, [team, isOwner, primaryTeamPlan, addSeatsCount, alreadyPaidCents]);
+
   useEffect(() => {
     if (!team || !isOwner) return;
-    const plan = DEFAULT_PLANS[0];
+    let cancelled = false;
     apiFetch<{ quote: PriceQuote }>('/api/pricing/quote', {
       method: 'POST',
       body: JSON.stringify({
         planId: team.planId,
-        unitPriceCents: plan.unitPriceCents,
+        unitPriceCents: primaryTeamPlan.unitPriceCents,
         seats: addSeatsCount,
-        currency: plan.currency,
+        currency: primaryTeamPlan.currency,
         existingSeats: team.seatsTotal,
         alreadyPaidCents,
       }),
     })
-      .then((res) => setTopUpQuote(res.quote))
+      .then((res) => {
+        if (!cancelled) setServerTopUpQuote(res.quote);
+      })
       .catch(() => {});
-  }, [team, isOwner, addSeatsCount, alreadyPaidCents]);
+    return () => {
+      cancelled = true;
+    };
+  }, [team, isOwner, primaryTeamPlan, addSeatsCount, alreadyPaidCents]);
+
+  const topUpQuote = serverTopUpQuote || localTopUpQuote;
 
   if (!portalUser) return null;
 
@@ -183,7 +220,7 @@ export function TeamPage() {
     if (!portalUser || !team || !topUpQuote) return;
     setCreatingTopUp(true);
     try {
-      let plan: PortalPlan = DEFAULT_PLANS[0];
+      let plan: PortalPlan = primaryTeamPlan;
       const pSnap = await getDoc(doc(db, 'portal_plans', team.planId));
       if (pSnap.exists()) plan = pSnap.data() as PortalPlan;
 
@@ -211,11 +248,11 @@ export function TeamPage() {
   const emptySeats = Math.max(0, team.seatsTotal - team.seatsUsed);
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 sm:py-12 space-y-8">
-      <div className="rounded-[24px] border border-[#084F4E]/15 bg-[#FAFBFB] p-6 sm:p-8 flex flex-wrap items-center justify-between gap-4">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-12 space-y-6 sm:space-y-8">
+      <div className="rounded-[24px] border border-[#084F4E]/15 bg-[#FAFBFB] p-5 sm:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <p className="text-xs font-semibold text-[#0E7C7B] mb-1">Team Workspace</p>
-          <h1 className="font-display text-3xl font-semibold text-[#084F4E]">{team.name}</h1>
+          <h1 className="font-display text-2xl sm:text-3xl font-semibold text-[#084F4E]">{team.name}</h1>
           <p className="text-sm text-[#3F4F4F] mt-1 tabular-nums">
             {team.seatsUsed} of {team.seatsTotal} seats used ·{' '}
             {team.accessActive ? 'Active' : 'Waiting for owner invoice payment'}
@@ -223,18 +260,50 @@ export function TeamPage() {
         </div>
 
         {!isOwner && (
-          <div className="text-right space-y-2">
+          <div className="sm:text-right space-y-2 w-full sm:w-auto">
             <p className="text-xs font-medium text-[#0E7C7B]">Paid by {team.ownerName}</p>
             <button
               type="button"
               onClick={() => void handleLeaveTeam()}
-              className="px-4 py-2 rounded-xl border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-50"
+              className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl border border-red-200 bg-white text-xs font-medium text-red-700 hover:bg-red-50"
             >
               Leave team
             </button>
           </div>
         )}
       </div>
+
+      {/* Applied Team Learning Plans */}
+      {appliedTeamPlans.length > 0 && (
+        <section className="rounded-[20px] border border-[#084F4E]/12 bg-white p-5 sm:p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Target className="w-4 h-4 text-[#0E7C7B]" />
+            <h2 className="font-display text-lg font-semibold text-[#084F4E]">
+              Team learning {appliedTeamPlans.length === 1 ? 'plan' : 'plans'}
+            </h2>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {appliedTeamPlans.map((tp) => (
+              <div
+                key={tp.id}
+                className="rounded-2xl border border-[#084F4E]/12 bg-[#FAFBFB] p-4 space-y-1.5"
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <h3 className="font-semibold text-sm text-[#084F4E]">{tp.name}</h3>
+                  <span className="text-[11px] text-[#3F4F4F] tabular-nums">
+                    {tp.learningPath.length} modules
+                  </span>
+                </div>
+                {tp.objective && (
+                  <p className="text-xs text-[#3F4F4F] leading-relaxed">
+                    <strong className="text-[#084F4E]">Objective:</strong> {tp.objective}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {isOwner && emptySeats > 0 && (
         <div className="rounded-2xl border border-[#C9A84C]/40 bg-[#E8C97A]/15 px-5 py-3.5 text-sm text-[#084F4E]">
@@ -250,12 +319,12 @@ export function TeamPage() {
       )}
 
       {isOwner && (
-        <div className="grid lg:grid-cols-12 gap-8 items-start">
+        <div className="grid lg:grid-cols-12 gap-6 sm:gap-8 items-start">
           {/* Invite & Members */}
           <div className="lg:col-span-7 space-y-6">
             <form
               onSubmit={(e) => void handleCreateInvite(e)}
-              className="rounded-[20px] border border-[#084F4E]/12 bg-white p-6 space-y-4"
+              className="rounded-[20px] border border-[#084F4E]/12 bg-white p-5 sm:p-6 space-y-4"
             >
               <h2 className="font-display text-xl font-semibold text-[#084F4E]">
                 Invite a teammate
@@ -263,18 +332,18 @@ export function TeamPage() {
               <p className="text-xs text-[#3F4F4F]">
                 Each link is single-use, expires in 14 days, and lets any Google account join a seat.
               </p>
-              <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex flex-col sm:flex-row gap-2.5">
                 <input
                   type="email"
                   placeholder="Teammate email (optional — sends invite email)"
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
-                  className="flex-1 px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm"
+                  className="flex-1 min-h-[42px] px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm"
                 />
                 <button
                   type="submit"
                   disabled={creatingInvite || emptySeats === 0}
-                  className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] disabled:opacity-50 whitespace-nowrap"
+                  className="w-full sm:w-auto min-h-[42px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] disabled:opacity-50 whitespace-nowrap"
                 >
                   <UserPlus className="w-4 h-4" />
                   <span>{creatingInvite ? 'Creating...' : 'Create invite link'}</span>
@@ -284,7 +353,7 @@ export function TeamPage() {
 
             {/* Active Invites */}
             {invites.length > 0 && (
-              <div className="rounded-[20px] border border-[#084F4E]/12 bg-white p-6 space-y-3">
+              <div className="rounded-[20px] border border-[#084F4E]/12 bg-white p-5 sm:p-6 space-y-3">
                 <h3 className="font-display text-lg font-semibold text-[#084F4E]">
                   Invite links
                 </h3>
@@ -341,7 +410,7 @@ export function TeamPage() {
             )}
 
             {/* Members List */}
-            <div className="rounded-[20px] border border-[#084F4E]/12 bg-white p-6 space-y-3">
+            <div className="rounded-[20px] border border-[#084F4E]/12 bg-white p-5 sm:p-6 space-y-3">
               <h3 className="font-display text-lg font-semibold text-[#084F4E]">
                 Team members
               </h3>
@@ -350,10 +419,10 @@ export function TeamPage() {
               ) : (
                 <div className="divide-y divide-[#084F4E]/10">
                   {members.map((m) => (
-                    <div key={m.uid} className="py-3 flex items-center justify-between gap-3 text-sm">
-                      <div>
-                        <p className="font-medium text-[#1F2A2A]">{m.displayName}</p>
-                        <p className="text-xs text-[#3F4F4F]">
+                    <div key={m.uid} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-sm">
+                      <div className="min-w-0">
+                        <p className="font-medium text-[#1F2A2A] truncate">{m.displayName}</p>
+                        <p className="text-xs text-[#3F4F4F] truncate">
                           {m.email} · {m.status}
                         </p>
                       </div>
@@ -367,7 +436,7 @@ export function TeamPage() {
                               actor: portalUser,
                             })
                           }
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-700 hover:bg-red-50"
+                          className="self-start sm:self-auto inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-700 hover:bg-red-50"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                           <span>Remove</span>
@@ -381,7 +450,7 @@ export function TeamPage() {
           </div>
 
           {/* Add seats top-up */}
-          <div className="lg:col-span-5 rounded-[20px] border border-[#084F4E]/12 bg-white p-6 space-y-4">
+          <div className="lg:col-span-5 rounded-[20px] border border-[#084F4E]/12 bg-white p-5 sm:p-6 space-y-4">
             <h2 className="font-display text-xl font-semibold text-[#084F4E]">
               Add seats later
             </h2>
@@ -399,7 +468,7 @@ export function TeamPage() {
                 max={200}
                 value={addSeatsCount}
                 onChange={(e) => setAddSeatsCount(Math.max(1, Number(e.target.value) || 1))}
-                className="w-32 px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm font-semibold tabular-nums"
+                className="w-full sm:w-32 min-h-[42px] px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm font-semibold tabular-nums"
               />
             </div>
 

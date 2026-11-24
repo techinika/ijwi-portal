@@ -13,7 +13,6 @@ import {
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase';
 import { apiFetch } from './api';
-import { DEFAULT_TEACHERS } from './seed';
 import type {
   PortalInvoice,
   PortalPlan,
@@ -167,6 +166,7 @@ export async function createEnrolmentInvoice(params: {
       ownerName: user.displayName,
       name: teamName,
       planId: plan.id,
+      assignedPlanIds: [plan.id],
       seatsTotal: seats,
       seatsUsed: ownerIsLearner ? 1 : 0,
       invoiceIds: [invoiceId],
@@ -293,20 +293,25 @@ export async function createEnrolmentInvoice(params: {
   return { invoiceId, teamId: teamId || undefined };
 }
 
-export async function pickTeacherForLearner(): Promise<{ uid: string; displayName: string }> {
+export async function pickTeacherForLearner(preferredTeacherId?: string): Promise<{ uid: string; displayName: string }> {
   try {
     const q = query(collection(db, 'portal_teachers'), where('active', '==', true));
     const snap = await getDocs(q);
     const list = snap.docs.map((d) => d.data() as TeacherProfile);
-    if (list.length > 0) {
-      const picked = list[Math.floor(Math.random() * list.length)];
+    if (preferredTeacherId) {
+      const match = list.find((t) => t.uid === preferredTeacherId);
+      if (match) return { uid: match.uid, displayName: match.displayName };
+    }
+    const claimed = list.filter((t) => !t.pendingClaim);
+    const pool = claimed.length > 0 ? claimed : list;
+    if (pool.length > 0) {
+      const picked = pool[Math.floor(Math.random() * pool.length)];
       return { uid: picked.uid, displayName: picked.displayName };
     }
   } catch {
-    // fallback
+    // no active teachers created by admin yet
   }
-  const fallback = DEFAULT_TEACHERS[Math.floor(Math.random() * DEFAULT_TEACHERS.length)];
-  return { uid: fallback.uid, displayName: fallback.displayName };
+  return { uid: '', displayName: 'Teacher pending assignment' };
 }
 
 export async function assignIndividualStudyGroup(params: {
@@ -391,10 +396,22 @@ export async function activatePaidInvoice(params: {
     createdAt: serverTimestamp(),
   });
 
-  // Assign teacher if payer doesn't have one yet
+  // Assign teacher if payer doesn't have one yet (check plan's creator teacher first if active)
+  let planTeacherId: string | undefined;
+  try {
+    const pSnap = await getDoc(doc(db, 'portal_plans', invoice.planId));
+    if (pSnap.exists()) {
+      planTeacherId = (pSnap.data() as PortalPlan).teacherId;
+    }
+  } catch {
+    // ignore
+  }
+
   const teacher = payer.teacherId
     ? { uid: payer.teacherId, displayName: 'Your Ijwi Teacher' }
-    : await pickTeacherForLearner();
+    : await pickTeacherForLearner(planTeacherId);
+
+  const mergedUserPlanIds = Array.from(new Set([...(payer.assignedPlanIds || []), invoice.planId].filter(Boolean)));
 
   // If team invoice: activate team & owner (and existing members) without mixing into random groups
   if (invoice.teamId) {
@@ -405,9 +422,13 @@ export async function activatePaidInvoice(params: {
       const newSeatsTotal = invoice.isTopUp
         ? teamData.seatsTotal + invoice.seats
         : teamData.seatsTotal;
+      const mergedTeamPlans = Array.from(
+        new Set([...(teamData.assignedPlanIds || []), teamData.planId, invoice.planId].filter(Boolean))
+      );
       await updateDoc(teamRef, {
         accessActive: true,
         seatsTotal: newSeatsTotal,
+        assignedPlanIds: mergedTeamPlans,
         invoiceIds: Array.from(new Set([...(teamData.invoiceIds || []), invoice.id])),
         updatedAt: serverTimestamp(),
       });
@@ -417,7 +438,8 @@ export async function activatePaidInvoice(params: {
       accessActive: invoice.ownerIsLearner || payer.accessActive,
       teamId: invoice.teamId,
       isTeamOwner: true,
-      teacherId: teacher.uid,
+      ...(teacher.uid ? { teacherId: teacher.uid } : {}),
+      assignedPlanIds: mergedUserPlanIds,
       updatedAt: serverTimestamp(),
     });
   } else {
@@ -432,7 +454,8 @@ export async function activatePaidInvoice(params: {
 
     await updateDoc(doc(db, 'users', invoice.payerId), {
       accessActive: true,
-      teacherId: teacher.uid,
+      ...(teacher.uid ? { teacherId: teacher.uid } : {}),
+      assignedPlanIds: mergedUserPlanIds,
       groupId,
       updatedAt: serverTimestamp(),
     });

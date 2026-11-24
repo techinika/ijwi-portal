@@ -23,6 +23,7 @@ export interface PortalUser {
   teamId?: string;
   groupId?: string;
   teacherId?: string;
+  assignedPlanIds?: string[];
   accessActive: boolean;
   isTeamOwner?: boolean;
   placementLevel?: string;
@@ -50,11 +51,16 @@ export interface LearningLevel {
 export interface PortalPlan {
   id: string;
   name: string;
+  objective: string;
   description: string;
+  level?: string;
+  teacherId?: string;
+  teacherName?: string;
   unitPriceCents: number;
   currency: string;
   included: string[];
   learningPath: LearningLevel[];
+  isPublicEnrolment?: boolean;
   active: boolean;
   createdAt?: unknown;
   updatedAt?: unknown;
@@ -100,6 +106,7 @@ export interface PortalTeam {
   ownerName: string;
   name: string;
   planId: string;
+  assignedPlanIds?: string[];
   seatsTotal: number;
   seatsUsed: number;
   invoiceIds?: string[];
@@ -155,6 +162,7 @@ export interface WeeklySlot {
 
 export interface TeacherProfile {
   uid: string;
+  email?: string;
   displayName: string;
   photoUrl: string;
   bio: string;
@@ -164,7 +172,33 @@ export interface TeacherProfile {
   bufferMin: number;
   maxPerDay: number;
   active: boolean;
+  pendingClaim?: boolean;
   createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface TeacherInvite {
+  id: string;
+  email: string;
+  displayName: string;
+  photoUrl: string;
+  bio: string;
+  teacherProfileId: string;
+  lessonLengthMin: number;
+  bufferMin: number;
+  maxPerDay: number;
+  createdBy: string;
+  claimedBy?: string;
+  revoked: boolean;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface BusySlot {
+  id: string;
+  startUtc: string;
+  endUtc: string;
+  status: BookingStatus;
   updatedAt?: unknown;
 }
 
@@ -206,6 +240,7 @@ export interface PortalResource {
   uploaderId: string;
   uploaderName: string;
   publicToPaid: boolean;
+  planIds?: string[];
   targetStudentIds?: string[];
   createdAt?: unknown;
   updatedAt?: unknown;
@@ -222,6 +257,7 @@ export interface GroupSession {
   capacity: number;
   locationType: 'platform' | 'external';
   meetingLink?: string;
+  planIds?: string[];
   status: 'upcoming' | 'cancelled' | 'completed';
   attendeeIds: string[];
   attendeeNames: string[];

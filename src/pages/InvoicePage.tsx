@@ -202,9 +202,9 @@ export function InvoicePage() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 sm:py-14 space-y-6">
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-14 space-y-6">
       {justPaid && invoice.status === 'paid' && (
-        <div className="rounded-[20px] border border-[#0E7C7B]/30 bg-[#E6F4F4] p-6 sm:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="rounded-[20px] border border-[#0E7C7B]/30 bg-[#E6F4F4] p-5 sm:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-start gap-3">
             <CheckCircle2 className="w-6 h-6 text-[#084F4E] shrink-0 mt-0.5" />
             <div>
@@ -218,7 +218,7 @@ export function InvoicePage() {
           </div>
           <Link
             to={invoice.teamId ? '/team' : '/dashboard'}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] whitespace-nowrap shrink-0"
+            className="w-full sm:w-auto min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] whitespace-nowrap shrink-0"
           >
             <span>{invoice.teamId ? 'Manage Team' : 'Open Dashboard'}</span>
             <ArrowRight className="w-4 h-4" />
@@ -226,13 +226,13 @@ export function InvoicePage() {
         </div>
       )}
 
-      <div className="rounded-[24px] border border-[#084F4E]/15 bg-white p-6 sm:p-10 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-4 pb-6 border-b border-[#084F4E]/10">
+      <div className="rounded-[24px] border border-[#084F4E]/15 bg-white p-5 sm:p-10 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-6 border-b border-[#084F4E]/10">
           <div>
             <p className="text-xs font-medium text-[#0E7C7B] mb-1">
               Invoice {invoice.number}
             </p>
-            <h1 className="font-display text-3xl font-semibold text-[#084F4E]">
+            <h1 className="font-display text-2xl sm:text-3xl font-semibold text-[#084F4E]">
               {invoice.status === 'paid' ? 'Payment Receipt' : 'Ijwi Enrolment Invoice'}
             </h1>
             <p className="text-sm text-[#3F4F4F] mt-1">
@@ -247,7 +247,7 @@ export function InvoicePage() {
           <button
             type="button"
             onClick={() => downloadInvoicePdf(invoice)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm font-medium text-[#084F4E] hover:bg-[#E6F4F4] transition-colors"
+            className="w-full sm:w-auto min-h-[42px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm font-medium text-[#084F4E] hover:bg-[#E6F4F4] transition-colors"
           >
             <Download className="w-4 h-4" />
             <span>Download PDF</span>
@@ -328,12 +328,12 @@ export function InvoicePage() {
 
         {/* Sandbox Pesapal Checkout Panel */}
         {sandboxOrder && invoice.status === 'unpaid' && (
-          <div className="mb-6 rounded-2xl border border-[#C9A84C]/40 bg-[#E8C97A]/15 p-5 space-y-4">
+          <div className="mb-6 rounded-2xl border border-[#C9A84C]/40 bg-[#E8C97A]/15 p-4 sm:p-5 space-y-4">
             <div>
               <p className="text-xs font-semibold text-[#084F4E]">
                 Pesapal API v3 Sandbox Checkout
               </p>
-              <p className="text-sm text-[#3F4F4F] mt-1">
+              <p className="text-sm text-[#3F4F4F] mt-1 break-all">
                 Order Ref: <span className="font-mono text-xs">{sandboxOrder.merchantRef}</span> ·
                 Tracking ID: <span className="font-mono text-xs">{sandboxOrder.trackingId}</span>
               </p>
@@ -349,14 +349,14 @@ export function InvoicePage() {
                 id="sandbox-method"
                 value={sandboxMethod}
                 onChange={(e) => setSandboxMethod(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-[#084F4E]/20 bg-white text-sm"
+                className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-[#084F4E]/20 bg-white text-sm"
               >
                 <option value="MTN Mobile Money">MTN Mobile Money (Rwanda)</option>
                 <option value="Airtel Money">Airtel Money</option>
                 <option value="Visa / Mastercard">Visa / Mastercard</option>
               </select>
             </div>
-            <div className="flex flex-wrap gap-3">
+            <div className="flex flex-col sm:flex-row gap-3">
               <button
                 type="button"
                 disabled={paying}
@@ -367,14 +367,14 @@ export function InvoicePage() {
                     sandboxMethod
                   )
                 }
-                className="px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] disabled:opacity-60"
+                className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] disabled:opacity-60"
               >
                 {paying ? 'Confirming with server...' : 'Confirm Sandbox Payment'}
               </button>
               <button
                 type="button"
                 onClick={() => setSandboxOrder(null)}
-                className="px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm text-[#3F4F4F]"
+                className="w-full sm:w-auto min-h-[44px] px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm text-[#3F4F4F]"
               >
                 Cancel
               </button>
@@ -383,13 +383,13 @@ export function InvoicePage() {
         )}
 
         {/* Primary Action */}
-        <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2">
           {invoice.status === 'unpaid' && !sandboxOrder && (
             <button
               type="button"
               disabled={paying}
               onClick={() => void handleStartPayment()}
-              className="inline-flex items-center gap-2 px-6 py-3.5 rounded-2xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] transition-colors disabled:opacity-60"
+              className="w-full sm:w-auto min-h-[46px] inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-2xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] transition-colors disabled:opacity-60"
             >
               <CreditCard className="w-4 h-4" />
               <span>{paying ? 'Preparing payment...' : 'Pay now with Pesapal'}</span>
@@ -401,7 +401,7 @@ export function InvoicePage() {
               type="button"
               disabled={paying}
               onClick={() => void handleRequestFreshInvoice()}
-              className="inline-flex items-center gap-2 px-6 py-3.5 rounded-2xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B]"
+              className="w-full sm:w-auto min-h-[46px] inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-2xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B]"
             >
               <RefreshCw className="w-4 h-4" />
               <span>Request fresh invoice</span>
@@ -411,7 +411,7 @@ export function InvoicePage() {
           {invoice.status === 'paid' && (
             <Link
               to={invoice.teamId ? '/team' : '/dashboard'}
-              className="inline-flex items-center gap-2 px-6 py-3.5 rounded-2xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B]"
+              className="w-full sm:w-auto min-h-[46px] inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-2xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B]"
             >
               <span>{invoice.teamId ? 'Go to Team Workspace' : 'Go to Dashboard'}</span>
               <ArrowRight className="w-4 h-4" />
@@ -420,7 +420,7 @@ export function InvoicePage() {
 
           <Link
             to="/profile"
-            className="text-sm font-medium text-[#0E7C7B] hover:underline"
+            className="text-center sm:text-left text-sm font-medium text-[#0E7C7B] hover:underline"
           >
             View all invoices in Profile
           </Link>
