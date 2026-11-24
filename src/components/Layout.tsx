@@ -1,6 +1,24 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Bell, Menu, X, LogOut, User as UserIcon, AlertCircle } from 'lucide-react';
+import {
+  Bell,
+  Menu,
+  X,
+  LogOut,
+  User as UserIcon,
+  AlertCircle,
+  LayoutDashboard,
+  Calendar,
+  BookOpen,
+  Users,
+  TrendingUp,
+  Briefcase,
+  GraduationCap,
+  Shield,
+  Receipt,
+  Sparkles,
+  type LucideIcon,
+} from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { formatMoney } from '../shared/pricing';
 
@@ -47,50 +65,71 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const shouldGateUnpaid =
     !loading && portalUser && !hasAccess && !isBillingOrPublicRoute;
 
-  const navLinks = (() => {
+  type NavItem = { to: string; label: string; shortLabel: string; icon: LucideIcon };
+
+  const navLinks: NavItem[] = (() => {
     if (!isSignedIn) {
       return [
-        { to: '/', label: 'Enrol' },
-        { to: '/#plans', label: 'Plans' },
-        { to: '/#team-pricing', label: 'Teams' },
+        { to: '/', label: 'Enrol', shortLabel: 'Enrol', icon: Sparkles },
+        { to: '/#plans', label: 'Plans', shortLabel: 'Plans', icon: BookOpen },
+        { to: '/#team-pricing', label: 'Teams', shortLabel: 'Teams', icon: Users },
       ];
     }
     if (!hasAccess) {
       return [
-        { to: '/', label: 'Enrol' },
+        { to: '/', label: 'Enrol', shortLabel: 'Enrol', icon: Sparkles },
         ...(unpaidInvoices[0]
-          ? [{ to: `/invoices/${unpaidInvoices[0].id}`, label: 'My Invoice' }]
+          ? [
+              {
+                to: `/invoices/${unpaidInvoices[0].id}`,
+                label: 'My Invoice',
+                shortLabel: 'Invoice',
+                icon: Receipt,
+              },
+            ]
           : []),
-        { to: '/profile', label: 'Billing' },
+        { to: '/profile', label: 'Billing', shortLabel: 'Billing', icon: UserIcon },
       ];
     }
     if (isAdmin) {
       return [
-        { to: '/admin', label: 'Admin' },
-        { to: '/teacher', label: 'Teaching' },
-        { to: '/dashboard', label: 'Portal' },
-        { to: '/resources', label: 'Resources' },
-        { to: '/sessions', label: 'Sessions' },
+        { to: '/admin', label: 'Admin', shortLabel: 'Admin', icon: Shield },
+        { to: '/teacher', label: 'Teaching', shortLabel: 'Teach', icon: GraduationCap },
+        { to: '/dashboard', label: 'Portal', shortLabel: 'Portal', icon: LayoutDashboard },
+        { to: '/resources', label: 'Resources', shortLabel: 'Library', icon: BookOpen },
+        { to: '/sessions', label: 'Sessions', shortLabel: 'Sessions', icon: Users },
       ];
     }
     if (isTeacher) {
       return [
-        { to: '/teacher', label: 'Teacher Desk' },
-        { to: '/resources', label: 'Resources' },
-        { to: '/sessions', label: 'Sessions' },
-        { to: '/profile', label: 'Profile' },
+        { to: '/teacher', label: 'Teacher Desk', shortLabel: 'Desk', icon: GraduationCap },
+        { to: '/resources', label: 'Resources', shortLabel: 'Library', icon: BookOpen },
+        { to: '/sessions', label: 'Sessions', shortLabel: 'Sessions', icon: Users },
+        { to: '/profile', label: 'Profile', shortLabel: 'Profile', icon: UserIcon },
       ];
     }
     return [
-      { to: '/dashboard', label: 'Dashboard' },
-      { to: '/bookings', label: 'Lessons' },
-      { to: '/resources', label: 'Resources' },
-      { to: '/sessions', label: 'Community' },
+      { to: '/dashboard', label: 'Dashboard', shortLabel: 'Portal', icon: LayoutDashboard },
+      { to: '/bookings', label: 'Lessons', shortLabel: 'Lessons', icon: Calendar },
+      { to: '/resources', label: 'Resources', shortLabel: 'Library', icon: BookOpen },
+      { to: '/sessions', label: 'Community', shortLabel: 'Sessions', icon: Users },
       ...(portalUser?.isTeamOwner || portalUser?.teamId
-        ? [{ to: '/team', label: 'Team' }]
-        : [{ to: '/progress', label: 'Progress' }]),
+        ? [{ to: '/team', label: 'Team', shortLabel: 'Team', icon: Briefcase }]
+        : [{ to: '/progress', label: 'Progress', shortLabel: 'Progress', icon: TrendingUp }]),
     ];
   })();
+
+  const isNavActive = (to: string) => {
+    if (to === '/') return location.pathname === '/';
+    if (to.startsWith('/#')) return false;
+    if (to === '/sessions') {
+      return location.pathname.startsWith('/sessions') || location.pathname.startsWith('/group');
+    }
+    return location.pathname.startsWith(to);
+  };
+
+  // Show persistent bottom navigation for signed-in users everywhere except "/" (which uses a sticky mobile checkout bar)
+  const showBottomNav = isSignedIn && location.pathname !== '/';
 
   async function handleSignIn() {
     setSigningIn(true);
@@ -130,10 +169,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           {/* Zone 2: Desktop single-line navigation links */}
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-[#3F4F4F]">
             {navLinks.map((item) => {
-              const active =
-                item.to === '/'
-                  ? location.pathname === '/'
-                  : location.pathname.startsWith(item.to.replace('/#', '/'));
+              const active = isNavActive(item.to);
               return (
                 <Link
                   key={item.to}
@@ -294,10 +330,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               </div>
             )}
             {navLinks.map((item) => {
-              const active =
-                item.to === '/'
-                  ? location.pathname === '/'
-                  : location.pathname.startsWith(item.to.replace('/#', '/'));
+              const active = isNavActive(item.to);
               return (
                 <Link
                   key={item.to}
@@ -437,7 +470,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         )}
       </main>
 
-      <footer className="border-t border-[#084F4E]/10 bg-white py-6 sm:py-8 mt-10 sm:mt-16">
+      <footer
+        className={`border-t border-[#084F4E]/10 bg-white py-6 sm:py-8 mt-10 sm:mt-16 ${
+          showBottomNav ? 'pb-24 md:pb-8' : ''
+        }`}
+      >
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4 text-sm text-[#3F4F4F] text-center sm:text-left">
           <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 sm:gap-3">
             <span className="font-display font-semibold text-[#084F4E]">Ijwi</span>
@@ -459,6 +496,47 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </footer>
+
+      {/* Persistent Mobile Bottom Navigation Bar for signed-in users */}
+      {showBottomNav && (
+        <nav
+          aria-label="Primary mobile navigation"
+          className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-[#084F4E]/12 bg-white/95 backdrop-blur shadow-[0_-4px_16px_rgba(8,79,78,0.06)] pb-[env(safe-area-inset-bottom)]"
+        >
+          <div
+            className="grid items-stretch max-w-lg mx-auto px-1"
+            style={{ gridTemplateColumns: `repeat(${navLinks.length}, minmax(0, 1fr))` }}
+          >
+            {navLinks.map((item) => {
+              const Icon = item.icon;
+              const active = isNavActive(item.to);
+              return (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  onClick={() => setMobileOpen(false)}
+                  className={`relative flex flex-col items-center justify-center gap-1 min-h-[58px] py-2 px-1 text-[11px] font-medium transition-colors ${
+                    active ? 'text-[#084F4E] font-semibold' : 'text-[#3F4F4F] hover:text-[#084F4E]'
+                  }`}
+                >
+                  {active && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute top-0 inset-x-3 h-0.5 rounded-full bg-[#C9A84C]"
+                    />
+                  )}
+                  <Icon
+                    className={`w-5 h-5 shrink-0 ${
+                      active ? 'text-[#084F4E]' : 'text-[#3F4F4F]'
+                    }`}
+                  />
+                  <span className="truncate max-w-full leading-none">{item.shortLabel}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </nav>
+      )}
     </div>
   );
 }
