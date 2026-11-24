@@ -1,0 +1,54 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "portal_invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "portal_invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "payerId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "portal_bookings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "teacherId", "order": "ASCENDING" },
+        { "fieldPath": "startUtc", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "portal_bookings",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "startUtc", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "portal_resources",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "level", "order": "ASCENDING" },
+        { "fieldPath": "topic", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "portal_sessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "startUtc", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

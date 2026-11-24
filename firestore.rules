@@ -1,0 +1,729 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrapAdmin() {
+      return isSignedIn() && request.auth.token.email == 'kiny.study@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrapAdmin() || (
+        isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+
+    function isTeacher() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+
+    function isActiveLearner() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accessActive == true &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'active';
+    }
+
+    // Connection check doc
+    match /test/{docId} {
+      allow get: if isSignedIn() && isValidId(docId);
+    }
+
+    // Users collection (shared with Ijwi Learn)
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'timezone', 'status', 'accessActive', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'photoUrl', 'role', 'timezone', 'organisation', 'status', 'teamId', 'groupId', 'teacherId', 'accessActive', 'isTeamOwner', 'placementLevel', 'noShowCount', 'lateCancelCount', 'adminNote', 'emailPrefs', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() <= 254 &&
+        data.displayName is string && data.displayName.size() <= 120 &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 512)) &&
+        data.role in ['student', 'teacher', 'admin'] &&
+        data.timezone is string && data.timezone.size() <= 64 &&
+        (!('organisation' in data) || (data.organisation is string && data.organisation.size() <= 120)) &&
+        data.status in ['active', 'suspended'] &&
+        (!('teamId' in data) || (data.teamId is string && data.teamId.size() <= 128)) &&
+        (!('groupId' in data) || (data.groupId is string && data.groupId.size() <= 128)) &&
+        (!('teacherId' in data) || (data.teacherId is string && data.teacherId.size() <= 128)) &&
+        data.accessActive is bool &&
+        (!('isTeamOwner' in data) || data.isTeamOwner is bool) &&
+        (!('placementLevel' in data) || (data.placementLevel is string && data.placementLevel.size() <= 60)) &&
+        (!('noShowCount' in data) || data.noShowCount is int) &&
+        (!('lateCancelCount' in data) || data.lateCancelCount is int) &&
+        (!('adminNote' in data) || (data.adminNote is string && data.adminNote.size() <= 500)) &&
+        (!('emailPrefs' in data) || data.emailPrefs is map) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /users/{uid} {
+      allow get: if isValidId(uid) && isSignedIn() && (
+        request.auth.uid == uid ||
+        isAdmin() ||
+        (isTeacher() && resource.data.teacherId == request.auth.uid)
+      );
+      allow list: if isBootstrapAdmin() || (
+        isSignedIn() && (
+          resource.data.uid == request.auth.uid ||
+          resource.data.teacherId == request.auth.uid
+        )
+      );
+      allow create: if isValidId(uid) && isSignedIn() && isValidUser(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isBootstrapAdmin() || (
+            incoming().role == 'student' &&
+            incoming().accessActive == false &&
+            incoming().status == 'active'
+          )
+        );
+      allow update: if isValidId(uid) && isSignedIn() && isValidUser(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (request.auth.uid == uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'timezone', 'organisation', 'placementLevel', 'emailPrefs', 'updatedAt'])) ||
+          (request.auth.uid == uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['teamId', 'groupId', 'teacherId', 'accessActive', 'isTeamOwner', 'organisation', 'updatedAt']) &&
+            incoming().role == existing().role &&
+            incoming().status == existing().status) ||
+          (isSignedIn() && existing().teamId is string && existing().teamId.size() > 0 &&
+            exists(/databases/$(database)/documents/portal_teams/$(existing().teamId)) &&
+            get(/databases/$(database)/documents/portal_teams/$(existing().teamId)).data.ownerId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['teamId', 'accessActive', 'updatedAt']) &&
+            incoming().teamId == '' && incoming().accessActive == false)
+        );
+      allow delete: if isValidId(uid) && isSignedIn() && (request.auth.uid == uid || isAdmin());
+    }
+
+    // Plans
+    function isValidPlan(data) {
+      return data.keys().hasAll(['id', 'name', 'description', 'unitPriceCents', 'currency', 'included', 'learningPath', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'description', 'unitPriceCents', 'currency', 'included', 'learningPath', 'active', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.description is string && data.description.size() <= 600 &&
+        data.unitPriceCents is int && data.unitPriceCents >= 0 &&
+        data.currency is string && data.currency.size() <= 8 &&
+        data.included is list && data.included.size() <= 16 &&
+        data.learningPath is list && data.learningPath.size() <= 20 &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_plans/{planId} {
+      allow get: if isValidId(planId) && (resource.data.active == true || isAdmin());
+      allow list: if resource.data.active == true || isBootstrapAdmin();
+      allow create: if isValidId(planId) && isAdmin() && isValidPlan(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(planId) && isAdmin() && isValidPlan(incoming()) &&
+        incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time;
+      allow delete: if isValidId(planId) && isAdmin();
+    }
+
+    // Invoices
+    function isValidInvoice(data) {
+      return data.keys().hasAll(['number', 'payerId', 'payerName', 'payerEmail', 'planId', 'planName', 'seats', 'ownerIsLearner', 'unitPriceCents', 'subtotalCents', 'teamDiscountPct', 'teamDiscountCents', 'couponDiscountCents', 'totalCents', 'currency', 'status', 'dueAt', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['number', 'payerId', 'payerName', 'payerEmail', 'organisation', 'teamId', 'isTopUp', 'planId', 'planName', 'seats', 'ownerIsLearner', 'unitPriceCents', 'subtotalCents', 'teamDiscountPct', 'teamDiscountCents', 'couponCode', 'couponDiscountCents', 'totalCents', 'currency', 'status', 'dueAt', 'paidAt', 'pesapalOrderRef', 'pesapalTrackingId', 'paymentMethod', 'paymentUrl', 'manualReason', 'refundReason', 'createdAt', 'updatedAt']) &&
+        data.number is string && data.number.size() >= 3 && data.number.size() <= 40 &&
+        isValidId(data.payerId) &&
+        data.payerName is string && data.payerName.size() <= 120 &&
+        data.payerEmail is string && data.payerEmail.size() <= 254 &&
+        (!('organisation' in data) || (data.organisation is string && data.organisation.size() <= 120)) &&
+        (!('teamId' in data) || (data.teamId is string && data.teamId.size() <= 128)) &&
+        (!('isTopUp' in data) || data.isTopUp is bool) &&
+        data.planId is string && data.planId.size() <= 128 &&
+        data.planName is string && data.planName.size() <= 120 &&
+        data.seats is int && data.seats >= 1 && data.seats <= 500 &&
+        data.ownerIsLearner is bool &&
+        data.unitPriceCents is int && data.unitPriceCents >= 0 &&
+        data.subtotalCents is int && data.subtotalCents >= 0 &&
+        data.teamDiscountPct is int && data.teamDiscountPct >= 0 && data.teamDiscountPct <= 100 &&
+        data.teamDiscountCents is int && data.teamDiscountCents >= 0 &&
+        (!('couponCode' in data) || (data.couponCode is string && data.couponCode.size() <= 40)) &&
+        data.couponDiscountCents is int && data.couponDiscountCents >= 0 &&
+        data.totalCents is int && data.totalCents >= 0 &&
+        data.currency is string && data.currency.size() <= 8 &&
+        data.status in ['unpaid', 'paid', 'expired', 'void', 'refunded'] &&
+        data.dueAt is string && data.dueAt.size() <= 64 &&
+        (!('paidAt' in data) || (data.paidAt is string && data.paidAt.size() <= 64)) &&
+        (!('pesapalOrderRef' in data) || (data.pesapalOrderRef is string && data.pesapalOrderRef.size() <= 128)) &&
+        (!('pesapalTrackingId' in data) || (data.pesapalTrackingId is string && data.pesapalTrackingId.size() <= 128)) &&
+        (!('paymentMethod' in data) || (data.paymentMethod is string && data.paymentMethod.size() <= 64)) &&
+        (!('paymentUrl' in data) || (data.paymentUrl is string && data.paymentUrl.size() <= 512)) &&
+        (!('manualReason' in data) || (data.manualReason is string && data.manualReason.size() <= 300)) &&
+        (!('refundReason' in data) || (data.refundReason is string && data.refundReason.size() <= 300)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_invoices/{invoiceId} {
+      allow get: if isValidId(invoiceId) && isSignedIn() && (resource.data.payerId == request.auth.uid || isAdmin());
+      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.payerId == request.auth.uid);
+      allow create: if isValidId(invoiceId) && isSignedIn() && isValidInvoice(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time &&
+        (isAdmin() || (incoming().payerId == request.auth.uid && incoming().status == 'unpaid'));
+      allow update: if isValidId(invoiceId) && isSignedIn() && isValidInvoice(incoming()) &&
+        incoming().payerId == existing().payerId &&
+        incoming().totalCents == existing().totalCents &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (existing().status == 'unpaid' &&
+            existing().payerId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paidAt', 'pesapalOrderRef', 'pesapalTrackingId', 'paymentMethod', 'paymentUrl', 'teamId', 'updatedAt']))
+        );
+      allow delete: if isValidId(invoiceId) && isAdmin();
+
+      match /payments/{paymentId} {
+        allow get: if isValidId(invoiceId) && isValidId(paymentId) && isSignedIn() &&
+          (get(/databases/$(database)/documents/portal_invoices/$(invoiceId)).data.payerId == request.auth.uid || isAdmin());
+        allow list: if isBootstrapAdmin();
+        allow create: if isValidId(invoiceId) && isValidId(paymentId) && isSignedIn() &&
+          (get(/databases/$(database)/documents/portal_invoices/$(invoiceId)).data.payerId == request.auth.uid || isAdmin()) &&
+          incoming().keys().hasAll(['trackingId', 'merchantRef', 'status', 'amountCents', 'currency', 'method', 'createdAt']) &&
+          incoming().keys().hasOnly(['trackingId', 'merchantRef', 'status', 'amountCents', 'currency', 'method', 'rawSummary', 'createdAt']) &&
+          incoming().trackingId is string && incoming().trackingId.size() <= 128 &&
+          incoming().merchantRef is string && incoming().merchantRef.size() <= 128 &&
+          incoming().status is string && incoming().status.size() <= 40 &&
+          incoming().amountCents is int &&
+          incoming().currency is string && incoming().currency.size() <= 8 &&
+          incoming().method is string && incoming().method.size() <= 64 &&
+          incoming().createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+
+    // Teams & Members
+    function isValidTeam(data) {
+      return data.keys().hasAll(['ownerId', 'ownerName', 'name', 'planId', 'seatsTotal', 'seatsUsed', 'accessActive', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'ownerName', 'name', 'planId', 'seatsTotal', 'seatsUsed', 'invoiceIds', 'accessActive', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ownerId) &&
+        data.ownerName is string && data.ownerName.size() <= 120 &&
+        data.name is string && data.name.size() <= 120 &&
+        data.planId is string && data.planId.size() <= 128 &&
+        data.seatsTotal is int && data.seatsTotal >= 1 && data.seatsTotal <= 500 &&
+        data.seatsUsed is int && data.seatsUsed >= 0 && data.seatsUsed <= 500 &&
+        (!('invoiceIds' in data) || (data.invoiceIds is list && data.invoiceIds.size() <= 50)) &&
+        data.accessActive is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_teams/{teamId} {
+      allow get: if isValidId(teamId) && isSignedIn() && (
+        resource.data.ownerId == request.auth.uid ||
+        exists(/databases/$(database)/documents/portal_teams/$(teamId)/members/$(request.auth.uid)) ||
+        isAdmin()
+      );
+      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(teamId) && isSignedIn() && isValidTeam(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(teamId) && isSignedIn() && isValidTeam(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (existing().ownerId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'seatsTotal', 'seatsUsed', 'invoiceIds', 'accessActive', 'updatedAt'])) ||
+          (incoming().diff(existing()).affectedKeys().hasOnly(['seatsUsed', 'updatedAt']))
+        );
+      allow delete: if isValidId(teamId) && isAdmin();
+
+      match /members/{memberUid} {
+        allow get: if isValidId(teamId) && isValidId(memberUid) && isSignedIn() && (
+          request.auth.uid == memberUid ||
+          get(/databases/$(database)/documents/portal_teams/$(teamId)).data.ownerId == request.auth.uid ||
+          isAdmin()
+        );
+        allow list: if isBootstrapAdmin() || (
+          isSignedIn() && resource.data.ownerId == request.auth.uid
+        );
+        allow create: if isValidId(teamId) && isValidId(memberUid) && isSignedIn() &&
+          incoming().keys().hasAll(['uid', 'ownerId', 'displayName', 'email', 'status', 'joinedAt']) &&
+          incoming().keys().hasOnly(['uid', 'ownerId', 'displayName', 'email', 'status', 'joinedAt']) &&
+          incoming().uid is string && incoming().uid.size() <= 128 &&
+          incoming().ownerId is string && incoming().ownerId.size() <= 128 &&
+          incoming().displayName is string && incoming().displayName.size() <= 120 &&
+          incoming().email is string && incoming().email.size() <= 254 &&
+          incoming().status in ['invited', 'joined'] &&
+          incoming().joinedAt == request.time &&
+          (request.auth.uid == memberUid || get(/databases/$(database)/documents/portal_teams/$(teamId)).data.ownerId == request.auth.uid || isAdmin());
+        allow update: if isValidId(teamId) && isValidId(memberUid) && isSignedIn() &&
+          (request.auth.uid == memberUid || get(/databases/$(database)/documents/portal_teams/$(teamId)).data.ownerId == request.auth.uid || isAdmin()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'displayName', 'joinedAt']);
+        allow delete: if isValidId(teamId) && isValidId(memberUid) && isSignedIn() && (
+          request.auth.uid == memberUid ||
+          get(/databases/$(database)/documents/portal_teams/$(teamId)).data.ownerId == request.auth.uid ||
+          isAdmin()
+        );
+      }
+    }
+
+    // Invites
+    function isValidInvite(data) {
+      return data.keys().hasAll(['teamId', 'teamName', 'ownerId', 'ownerName', 'planId', 'tokenHash', 'expiresAt', 'revoked', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['teamId', 'teamName', 'ownerId', 'ownerName', 'planId', 'tokenHash', 'email', 'expiresAt', 'acceptedBy', 'acceptedAt', 'revoked', 'createdAt', 'updatedAt']) &&
+        isValidId(data.teamId) &&
+        data.teamName is string && data.teamName.size() <= 120 &&
+        isValidId(data.ownerId) &&
+        data.ownerName is string && data.ownerName.size() <= 120 &&
+        data.planId is string && data.planId.size() <= 128 &&
+        data.tokenHash is string && data.tokenHash.size() <= 128 &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 254)) &&
+        data.expiresAt is string && data.expiresAt.size() <= 64 &&
+        (!('acceptedBy' in data) || (data.acceptedBy is string && data.acceptedBy.size() <= 128)) &&
+        (!('acceptedAt' in data) || (data.acceptedAt is string && data.acceptedAt.size() <= 64)) &&
+        data.revoked is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_invites/{inviteId} {
+      allow get: if isValidId(inviteId);
+      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(inviteId) && isSignedIn() && isValidInvite(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().revoked == false &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(inviteId) && isSignedIn() && isValidInvite(incoming()) &&
+        incoming().teamId == existing().teamId &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (existing().ownerId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['revoked', 'expiresAt', 'updatedAt'])) ||
+          (!('acceptedBy' in existing()) && existing().revoked == false &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['acceptedBy', 'acceptedAt', 'updatedAt']) &&
+            incoming().acceptedBy == request.auth.uid)
+        );
+      allow delete: if isValidId(inviteId) && isAdmin();
+    }
+
+    // Study Groups
+    function isValidGroup(data) {
+      return data.keys().hasAll(['name', 'planId', 'teacherId', 'teacherName', 'capacity', 'memberIds', 'memberFirstNames', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['name', 'planId', 'teacherId', 'teacherName', 'capacity', 'memberIds', 'memberFirstNames', 'createdAt', 'updatedAt']) &&
+        data.name is string && data.name.size() <= 120 &&
+        data.planId is string && data.planId.size() <= 128 &&
+        data.teacherId is string && data.teacherId.size() <= 128 &&
+        data.teacherName is string && data.teacherName.size() <= 120 &&
+        data.capacity is int && data.capacity >= 1 && data.capacity <= 12 &&
+        data.memberIds is list && data.memberIds.size() <= 12 &&
+        data.memberFirstNames is list && data.memberFirstNames.size() <= 12 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_groups/{groupId} {
+      allow get: if isValidId(groupId) && isSignedIn() && (
+        request.auth.uid in resource.data.memberIds ||
+        resource.data.teacherId == request.auth.uid ||
+        isAdmin()
+      );
+      allow list: if isBootstrapAdmin() || (isSignedIn() && (
+        request.auth.uid in resource.data.memberIds ||
+        resource.data.teacherId == request.auth.uid ||
+        resource.data.capacity <= 12
+      ));
+      allow create: if isValidId(groupId) && isSignedIn() && isValidGroup(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time &&
+        (isAdmin() || request.auth.uid in incoming().memberIds);
+      allow update: if isValidId(groupId) && isSignedIn() && isValidGroup(incoming()) &&
+        incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time && (
+          isAdmin() ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberIds', 'memberFirstNames', 'updatedAt'])
+        );
+      allow delete: if isValidId(groupId) && isAdmin();
+    }
+
+    // Teachers (non-PII public bio & availability)
+    function isValidTeacher(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'photoUrl', 'bio', 'availability', 'daysOff', 'lessonLengthMin', 'bufferMin', 'maxPerDay', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'photoUrl', 'bio', 'availability', 'daysOff', 'lessonLengthMin', 'bufferMin', 'maxPerDay', 'active', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() <= 120 &&
+        data.photoUrl is string && data.photoUrl.size() <= 512 &&
+        data.bio is string && data.bio.size() <= 600 &&
+        data.availability is list && data.availability.size() <= 40 &&
+        data.daysOff is list && data.daysOff.size() <= 60 &&
+        data.lessonLengthMin is int && data.lessonLengthMin >= 15 && data.lessonLengthMin <= 180 &&
+        data.bufferMin is int && data.bufferMin >= 0 && data.bufferMin <= 60 &&
+        data.maxPerDay is int && data.maxPerDay >= 1 && data.maxPerDay <= 20 &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_teachers/{uid} {
+      allow get: if isValidId(uid) && isSignedIn();
+      allow list: if isSignedIn() && (resource.data.active == true || isBootstrapAdmin());
+      allow create: if isValidId(uid) && isAdmin() && isValidTeacher(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(uid) && isSignedIn() && isValidTeacher(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (request.auth.uid == uid && isTeacher() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['bio', 'availability', 'daysOff', 'lessonLengthMin', 'bufferMin', 'maxPerDay', 'updatedAt']))
+        );
+      allow delete: if isValidId(uid) && isAdmin();
+    }
+
+    // Bookings
+    function isValidBooking(data) {
+      return data.keys().hasAll(['studentId', 'studentName', 'teacherId', 'teacherName', 'startUtc', 'endUtc', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['studentId', 'studentName', 'teacherId', 'teacherName', 'startUtc', 'endUtc', 'status', 'note', 'teacherFeedback', 'createdAt', 'updatedAt']) &&
+        isValidId(data.studentId) &&
+        data.studentName is string && data.studentName.size() <= 120 &&
+        isValidId(data.teacherId) &&
+        data.teacherName is string && data.teacherName.size() <= 120 &&
+        data.startUtc is string && data.startUtc.size() <= 64 &&
+        data.endUtc is string && data.endUtc.size() <= 64 &&
+        data.status in ['confirmed', 'rescheduled', 'cancelled', 'completed', 'no_show', 'late_cancel'] &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 400)) &&
+        (!('teacherFeedback' in data) || (data.teacherFeedback is string && data.teacherFeedback.size() <= 600)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_bookings/{bookingId} {
+      allow get: if isValidId(bookingId) && isSignedIn() && (
+        resource.data.studentId == request.auth.uid ||
+        resource.data.teacherId == request.auth.uid ||
+        isAdmin()
+      );
+      allow list: if isBootstrapAdmin() || (isSignedIn() && (
+        resource.data.studentId == request.auth.uid ||
+        resource.data.teacherId == request.auth.uid
+      ));
+      allow create: if isValidId(bookingId) && isActiveLearner() && isValidBooking(incoming()) &&
+        incoming().studentId == request.auth.uid &&
+        incoming().status == 'confirmed' &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(bookingId) && isSignedIn() && isValidBooking(incoming()) &&
+        incoming().studentId == existing().studentId &&
+        incoming().teacherId == existing().teacherId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (existing().studentId == request.auth.uid &&
+            existing().status in ['confirmed', 'rescheduled'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['startUtc', 'endUtc', 'status', 'note', 'updatedAt'])) ||
+          (existing().teacherId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'teacherFeedback', 'updatedAt']))
+        );
+      allow delete: if isValidId(bookingId) && isAdmin();
+    }
+
+    // Progress
+    function isValidLessonProgress(data) {
+      return data.keys().hasAll(['studentId', 'lessonId', 'lessonTitle', 'levelTitle', 'status', 'updatedAt']) &&
+        data.keys().hasOnly(['studentId', 'lessonId', 'lessonTitle', 'levelTitle', 'status', 'teacherNote', 'completedAt', 'updatedAt']) &&
+        isValidId(data.studentId) &&
+        isValidId(data.lessonId) &&
+        data.lessonTitle is string && data.lessonTitle.size() <= 160 &&
+        data.levelTitle is string && data.levelTitle.size() <= 120 &&
+        data.status in ['not_started', 'in_progress', 'done'] &&
+        (!('teacherNote' in data) || (data.teacherNote is string && data.teacherNote.size() <= 500)) &&
+        (!('completedAt' in data) || (data.completedAt is string && data.completedAt.size() <= 64)) &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_progress/{studentUid}/lessons/{lessonId} {
+      allow get: if isValidId(studentUid) && isValidId(lessonId) && isSignedIn() && (
+        request.auth.uid == studentUid ||
+        isTeacher() ||
+        isAdmin()
+      );
+      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow create, update: if isValidId(studentUid) && isValidId(lessonId) && isSignedIn() &&
+        isValidLessonProgress(incoming()) &&
+        incoming().studentId == studentUid &&
+        incoming().lessonId == lessonId &&
+        incoming().updatedAt == request.time &&
+        (request.auth.uid == studentUid || isTeacher() || isAdmin());
+      allow delete: if isValidId(studentUid) && isValidId(lessonId) && isAdmin();
+    }
+
+    // Resources metadata (binary files stored privately & streamed via API)
+    function isValidResource(data) {
+      return data.keys().hasAll(['type', 'title', 'level', 'topic', 'uploaderId', 'uploaderName', 'publicToPaid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['type', 'title', 'description', 'fileKey', 'url', 'level', 'topic', 'uploaderId', 'uploaderName', 'publicToPaid', 'targetStudentIds', 'createdAt', 'updatedAt']) &&
+        data.type in ['pdf', 'video', 'link'] &&
+        data.title is string && data.title.size() <= 160 &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+        (!('fileKey' in data) || (data.fileKey is string && data.fileKey.size() <= 256)) &&
+        (!('url' in data) || (data.url is string && data.url.size() <= 512)) &&
+        data.level is string && data.level.size() <= 80 &&
+        data.topic is string && data.topic.size() <= 80 &&
+        isValidId(data.uploaderId) &&
+        data.uploaderName is string && data.uploaderName.size() <= 120 &&
+        data.publicToPaid is bool &&
+        (!('targetStudentIds' in data) || (data.targetStudentIds is list && data.targetStudentIds.size() <= 50)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_resources/{resourceId} {
+      allow get: if isValidId(resourceId) && isSignedIn() && (isActiveLearner() || isTeacher() || isAdmin());
+      allow list: if isBootstrapAdmin() || (isSignedIn() && (resource.data.publicToPaid == true || resource.data.uploaderId == request.auth.uid));
+      allow create: if isValidId(resourceId) && isSignedIn() && (isTeacher() || isAdmin()) &&
+        isValidResource(incoming()) &&
+        incoming().uploaderId == request.auth.uid &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(resourceId) && isSignedIn() && (isAdmin() || resource.data.uploaderId == request.auth.uid) &&
+        isValidResource(incoming()) &&
+        incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time;
+      allow delete: if isValidId(resourceId) && isSignedIn() && (isAdmin() || resource.data.uploaderId == request.auth.uid);
+
+      match /views/{viewId} {
+        allow get: if isValidId(resourceId) && isValidId(viewId) && (isTeacher() || isAdmin());
+        allow list: if isBootstrapAdmin();
+        allow create: if isValidId(resourceId) && isValidId(viewId) && isActiveLearner() &&
+          incoming().keys().hasAll(['viewerId', 'viewerName', 'viewedAt']) &&
+          incoming().keys().hasOnly(['viewerId', 'viewerName', 'viewedAt']) &&
+          incoming().viewerId == request.auth.uid &&
+          incoming().viewerName is string && incoming().viewerName.size() <= 120 &&
+          incoming().viewedAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+
+    // Group Sessions created by students
+    function isValidSession(data) {
+      return data.keys().hasAll(['creatorId', 'creatorName', 'title', 'topic', 'startUtc', 'capacity', 'locationType', 'status', 'attendeeIds', 'attendeeNames', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['creatorId', 'creatorName', 'title', 'topic', 'description', 'startUtc', 'capacity', 'locationType', 'meetingLink', 'status', 'attendeeIds', 'attendeeNames', 'createdAt', 'updatedAt']) &&
+        isValidId(data.creatorId) &&
+        data.creatorName is string && data.creatorName.size() <= 120 &&
+        data.title is string && data.title.size() <= 160 &&
+        data.topic is string && data.topic.size() <= 100 &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+        data.startUtc is string && data.startUtc.size() <= 64 &&
+        data.capacity is int && data.capacity >= 2 && data.capacity <= 30 &&
+        data.locationType in ['platform', 'external'] &&
+        (!('meetingLink' in data) || (data.meetingLink is string && data.meetingLink.size() <= 512)) &&
+        data.status in ['upcoming', 'cancelled', 'completed'] &&
+        data.attendeeIds is list && data.attendeeIds.size() <= 30 &&
+        data.attendeeNames is list && data.attendeeNames.size() <= 30 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_sessions/{sessionId} {
+      allow get: if isValidId(sessionId) && isSignedIn() && (isActiveLearner() || isTeacher() || isAdmin());
+      allow list: if isBootstrapAdmin() || (isSignedIn() && (
+        resource.data.status == 'upcoming' ||
+        resource.data.creatorId == request.auth.uid ||
+        request.auth.uid in resource.data.attendeeIds
+      ));
+      allow create: if isValidId(sessionId) && isActiveLearner() && isValidSession(incoming()) &&
+        incoming().creatorId == request.auth.uid &&
+        incoming().status == 'upcoming' &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(sessionId) && isSignedIn() && isValidSession(incoming()) &&
+        incoming().creatorId == existing().creatorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (existing().creatorId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'title', 'topic', 'description', 'startUtc', 'meetingLink', 'updatedAt'])) ||
+          (isActiveLearner() && existing().status == 'upcoming' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['attendeeIds', 'attendeeNames', 'updatedAt']))
+        );
+      allow delete: if isValidId(sessionId) && isAdmin();
+    }
+
+    // Coupons
+    function isValidCoupon(data) {
+      return data.keys().hasAll(['code', 'type', 'value', 'usageLimit', 'usedCount', 'perPersonLimit', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['code', 'type', 'value', 'startsAt', 'endsAt', 'usageLimit', 'usedCount', 'perPersonLimit', 'planId', 'active', 'createdAt', 'updatedAt']) &&
+        data.code is string && data.code.size() >= 2 && data.code.size() <= 40 &&
+        data.type in ['percent', 'fixed'] &&
+        data.value is int && data.value >= 1 &&
+        (!('startsAt' in data) || (data.startsAt is string && data.startsAt.size() <= 64)) &&
+        (!('endsAt' in data) || (data.endsAt is string && data.endsAt.size() <= 64)) &&
+        data.usageLimit is int && data.usageLimit >= 1 &&
+        data.usedCount is int && data.usedCount >= 0 &&
+        data.perPersonLimit is int && data.perPersonLimit >= 1 &&
+        (!('planId' in data) || (data.planId is string && data.planId.size() <= 128)) &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /portal_coupons/{code} {
+      allow get: if isValidId(code) && (resource.data.active == true || isAdmin());
+      allow list: if isBootstrapAdmin();
+      allow create: if isValidId(code) && isAdmin() && isValidCoupon(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(code) && isSignedIn() && isValidCoupon(incoming()) &&
+        incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (incoming().diff(existing()).affectedKeys().hasOnly(['usedCount', 'updatedAt']) &&
+            incoming().usedCount == existing().usedCount + 1)
+        );
+      allow delete: if isValidId(code) && isAdmin();
+
+      match /redemptions/{uid} {
+        allow get: if isValidId(code) && isValidId(uid) && isSignedIn() && (request.auth.uid == uid || isAdmin());
+        allow list: if isBootstrapAdmin();
+        allow create, update: if isValidId(code) && isValidId(uid) && isSignedIn() && request.auth.uid == uid &&
+          incoming().keys().hasAll(['uid', 'invoiceId', 'count', 'redeemedAt']) &&
+          incoming().keys().hasOnly(['uid', 'invoiceId', 'count', 'redeemedAt']) &&
+          incoming().uid == uid &&
+          incoming().count is int &&
+          incoming().redeemedAt == request.time;
+        allow delete: if isValidId(code) && isValidId(uid) && isAdmin();
+      }
+    }
+
+    // Certificates (public verification by code, no list scraping)
+    function isValidCertificate(data) {
+      return data.keys().hasAll(['certCode', 'userId', 'learnerName', 'levelName', 'planName', 'issuedAt', 'createdAt']) &&
+        data.keys().hasOnly(['certCode', 'userId', 'learnerName', 'levelName', 'planName', 'issuedAt', 'createdAt']) &&
+        isValidId(data.certCode) &&
+        isValidId(data.userId) &&
+        data.learnerName is string && data.learnerName.size() <= 120 &&
+        data.levelName is string && data.levelName.size() <= 120 &&
+        data.planName is string && data.planName.size() <= 120 &&
+        data.issuedAt is string && data.issuedAt.size() <= 64 &&
+        data.createdAt is timestamp;
+    }
+
+    match /portal_certificates/{certCode} {
+      allow get: if isValidId(certCode);
+      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(certCode) && isSignedIn() && (isTeacher() || isAdmin() || request.auth.uid == incoming().userId) &&
+        isValidCertificate(incoming()) && incoming().createdAt == request.time;
+      allow update, delete: if isValidId(certCode) && isAdmin();
+    }
+
+    // Lesson feedback (student submits, admin views only)
+    function isValidFeedback(data) {
+      return data.keys().hasAll(['bookingId', 'studentId', 'studentName', 'teacherId', 'teacherName', 'rating', 'createdAt']) &&
+        data.keys().hasOnly(['bookingId', 'studentId', 'studentName', 'teacherId', 'teacherName', 'rating', 'comment', 'createdAt']) &&
+        isValidId(data.bookingId) &&
+        isValidId(data.studentId) &&
+        data.studentName is string && data.studentName.size() <= 120 &&
+        isValidId(data.teacherId) &&
+        data.teacherName is string && data.teacherName.size() <= 120 &&
+        data.rating is int && data.rating >= 1 && data.rating <= 5 &&
+        (!('comment' in data) || (data.comment is string && data.comment.size() <= 600)) &&
+        data.createdAt is timestamp;
+    }
+
+    match /portal_feedback/{feedbackId} {
+      allow get: if isValidId(feedbackId) && isAdmin();
+      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isValidId(feedbackId) && isActiveLearner() && isValidFeedback(incoming()) &&
+        incoming().studentId == request.auth.uid && incoming().createdAt == request.time;
+      allow update, delete: if isValidId(feedbackId) && isAdmin();
+    }
+
+    // Announcements
+    match /portal_announcements/{announcementId} {
+      allow get: if isValidId(announcementId) && isSignedIn();
+      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.active == true);
+      allow create: if isValidId(announcementId) && isAdmin() &&
+        incoming().keys().hasAll(['title', 'body', 'audienceType', 'authorId', 'active', 'createdAt']) &&
+        incoming().keys().hasOnly(['title', 'body', 'audienceType', 'audienceId', 'authorId', 'active', 'createdAt']) &&
+        incoming().title is string && incoming().title.size() <= 160 &&
+        incoming().body is string && incoming().body.size() <= 1000 &&
+        incoming().audienceType in ['all', 'plan', 'team', 'group'] &&
+        incoming().createdAt == request.time;
+      allow update, delete: if isValidId(announcementId) && isAdmin();
+    }
+
+    // Notifications per user
+    match /portal_notifications/{uid}/items/{itemId} {
+      allow get: if isValidId(uid) && isValidId(itemId) && isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(uid) && isValidId(itemId) && isSignedIn() &&
+        incoming().keys().hasAll(['userId', 'title', 'body', 'type', 'read', 'createdAt']) &&
+        incoming().keys().hasOnly(['userId', 'title', 'body', 'type', 'link', 'read', 'createdAt']) &&
+        incoming().userId == uid &&
+        incoming().title is string && incoming().title.size() <= 160 &&
+        incoming().body is string && incoming().body.size() <= 400 &&
+        incoming().read is bool &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(uid) && isValidId(itemId) && isSignedIn() && request.auth.uid == uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if isValidId(uid) && isValidId(itemId) && (request.auth.uid == uid || isAdmin());
+    }
+
+    // Audit Log
+    match /portal_auditLog/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isBootstrapAdmin();
+      allow create: if isValidId(logId) && isSignedIn() &&
+        incoming().keys().hasAll(['actorId', 'actorEmail', 'action', 'targetType', 'targetId', 'summary', 'createdAt']) &&
+        incoming().keys().hasOnly(['actorId', 'actorEmail', 'action', 'targetType', 'targetId', 'summary', 'createdAt']) &&
+        incoming().actorId == request.auth.uid &&
+        incoming().action is string && incoming().action.size() <= 80 &&
+        incoming().summary is string && incoming().summary.size() <= 400 &&
+        incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Email Log
+    match /portal_emailLog/{logId} {
+      allow get: if isValidId(logId) && isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if isBootstrapAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(logId) && isSignedIn() &&
+        incoming().keys().hasAll(['userId', 'to', 'subject', 'type', 'status', 'previewText', 'createdAt']) &&
+        incoming().keys().hasOnly(['userId', 'to', 'subject', 'type', 'status', 'previewText', 'createdAt']) &&
+        incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Settings & Counters
+    match /portal_settings/{settingId} {
+      allow get: if isValidId(settingId) && (settingId == 'portal' || isSignedIn());
+      allow list: if isBootstrapAdmin();
+      allow create: if isValidId(settingId) && isSignedIn() && (
+        isAdmin() ||
+        (settingId == 'counters' &&
+          incoming().keys().hasAll(['invoiceSeq', 'updatedAt']) &&
+          incoming().keys().hasOnly(['invoiceSeq', 'updatedAt']) &&
+          incoming().invoiceSeq is int &&
+          incoming().updatedAt == request.time)
+      );
+      allow update: if isValidId(settingId) && isSignedIn() && (
+        isAdmin() ||
+        (settingId == 'counters' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['invoiceSeq', 'updatedAt']) &&
+          incoming().invoiceSeq == existing().invoiceSeq + 1 &&
+          incoming().updatedAt == request.time)
+      );
+      allow delete: if isValidId(settingId) && isAdmin();
+    }
+  }
+}

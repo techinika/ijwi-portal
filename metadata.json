@@ -1,0 +1,6 @@
+{
+  "name": "Ijwi Portal",
+  "description": "Enrolment, payments, teacher booking, protected learning resources, study groups, and progress tracking for Kinyarwanda learners at Ijwi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

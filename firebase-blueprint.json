@@ -1,0 +1,401 @@
+{
+  "entities": {
+    "User": {
+      "title": "Portal User",
+      "description": "User record shared across Ijwi Learn and Ijwi Portal.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "photoUrl": { "type": "string", "maxLength": 512 },
+        "role": { "type": "string", "enum": ["student", "teacher", "admin"] },
+        "timezone": { "type": "string", "maxLength": 64 },
+        "organisation": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "teamId": { "type": "string", "maxLength": 128 },
+        "groupId": { "type": "string", "maxLength": 128 },
+        "teacherId": { "type": "string", "maxLength": 128 },
+        "accessActive": { "type": "boolean" },
+        "isTeamOwner": { "type": "boolean" },
+        "placementLevel": { "type": "string", "maxLength": 60 },
+        "noShowCount": { "type": "integer" },
+        "lateCancelCount": { "type": "integer" },
+        "adminNote": { "type": "string", "maxLength": 500 },
+        "emailPrefs": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role", "timezone", "status", "accessActive", "createdAt", "updatedAt"]
+    },
+    "Plan": {
+      "title": "Kinyarwanda Plan",
+      "description": "Enrolment plan with pricing and structured learning path.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 600 },
+        "unitPriceCents": { "type": "integer" },
+        "currency": { "type": "string", "maxLength": 8 },
+        "included": { "type": "array" },
+        "learningPath": { "type": "array" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "description", "unitPriceCents", "currency", "included", "learningPath", "active", "createdAt", "updatedAt"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Immutable financial snapshot of an enrolment or seat top-up.",
+      "type": "object",
+      "properties": {
+        "number": { "type": "string", "maxLength": 40 },
+        "payerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "payerName": { "type": "string", "maxLength": 120 },
+        "payerEmail": { "type": "string", "maxLength": 254 },
+        "organisation": { "type": "string", "maxLength": 120 },
+        "teamId": { "type": "string", "maxLength": 128 },
+        "isTopUp": { "type": "boolean" },
+        "planId": { "type": "string", "maxLength": 128 },
+        "planName": { "type": "string", "maxLength": 120 },
+        "seats": { "type": "integer" },
+        "ownerIsLearner": { "type": "boolean" },
+        "unitPriceCents": { "type": "integer" },
+        "subtotalCents": { "type": "integer" },
+        "teamDiscountPct": { "type": "integer" },
+        "teamDiscountCents": { "type": "integer" },
+        "couponCode": { "type": "string", "maxLength": 40 },
+        "couponDiscountCents": { "type": "integer" },
+        "totalCents": { "type": "integer" },
+        "currency": { "type": "string", "maxLength": 8 },
+        "status": { "type": "string", "enum": ["unpaid", "paid", "expired", "void", "refunded"] },
+        "dueAt": { "type": "string", "format": "date-time" },
+        "paidAt": { "type": "string", "format": "date-time" },
+        "pesapalOrderRef": { "type": "string", "maxLength": 128 },
+        "pesapalTrackingId": { "type": "string", "maxLength": 128 },
+        "paymentMethod": { "type": "string", "maxLength": 64 },
+        "paymentUrl": { "type": "string", "maxLength": 512 },
+        "manualReason": { "type": "string", "maxLength": 300 },
+        "refundReason": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["number", "payerId", "payerName", "payerEmail", "planId", "planName", "seats", "ownerIsLearner", "unitPriceCents", "subtotalCents", "teamDiscountPct", "teamDiscountCents", "couponDiscountCents", "totalCents", "currency", "status", "dueAt", "createdAt", "updatedAt"]
+    },
+    "Team": {
+      "title": "Team",
+      "description": "Purchased team account managed by a team owner.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerName": { "type": "string", "maxLength": 120 },
+        "name": { "type": "string", "maxLength": 120 },
+        "planId": { "type": "string", "maxLength": 128 },
+        "seatsTotal": { "type": "integer" },
+        "seatsUsed": { "type": "integer" },
+        "accessActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "ownerName", "name", "planId", "seatsTotal", "seatsUsed", "accessActive", "createdAt", "updatedAt"]
+    },
+    "TeamMember": {
+      "title": "Team Member",
+      "description": "Seat assignment inside a team.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 254 },
+        "status": { "type": "string", "enum": ["invited", "joined"] },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email", "status", "joinedAt"]
+    },
+    "Invite": {
+      "title": "Team Invite",
+      "description": "Single-use expiring team invite token.",
+      "type": "object",
+      "properties": {
+        "teamId": { "type": "string", "maxLength": 128 },
+        "teamName": { "type": "string", "maxLength": 120 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "ownerName": { "type": "string", "maxLength": 120 },
+        "planId": { "type": "string", "maxLength": 128 },
+        "tokenHash": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 254 },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "acceptedBy": { "type": "string", "maxLength": 128 },
+        "revoked": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["teamId", "teamName", "ownerId", "ownerName", "planId", "tokenHash", "expiresAt", "revoked", "createdAt", "updatedAt"]
+    },
+    "StudyGroup": {
+      "title": "Study Group",
+      "description": "Cohort of up to 8 individual learners on the same plan.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 120 },
+        "planId": { "type": "string", "maxLength": 128 },
+        "teacherId": { "type": "string", "maxLength": 128 },
+        "teacherName": { "type": "string", "maxLength": 120 },
+        "capacity": { "type": "integer" },
+        "memberIds": { "type": "array" },
+        "memberFirstNames": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "planId", "teacherId", "teacherName", "capacity", "memberIds", "memberFirstNames", "createdAt", "updatedAt"]
+    },
+    "TeacherProfile": {
+      "title": "Teacher Profile",
+      "description": "Public teacher profile and weekly availability configuration.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "photoUrl": { "type": "string", "maxLength": 512 },
+        "bio": { "type": "string", "maxLength": 600 },
+        "availability": { "type": "array" },
+        "daysOff": { "type": "array" },
+        "lessonLengthMin": { "type": "integer" },
+        "bufferMin": { "type": "integer" },
+        "maxPerDay": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "photoUrl", "bio", "availability", "daysOff", "lessonLengthMin", "bufferMin", "maxPerDay", "active", "createdAt", "updatedAt"]
+    },
+    "Booking": {
+      "title": "Lesson Booking",
+      "description": "1-on-1 lesson booking between student and teacher in UTC.",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string", "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 120 },
+        "teacherId": { "type": "string", "maxLength": 128 },
+        "teacherName": { "type": "string", "maxLength": 120 },
+        "startUtc": { "type": "string", "maxLength": 64 },
+        "endUtc": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["confirmed", "rescheduled", "cancelled", "completed", "no_show", "late_cancel"] },
+        "note": { "type": "string", "maxLength": 400 },
+        "teacherFeedback": { "type": "string", "maxLength": 600 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["studentId", "studentName", "teacherId", "teacherName", "startUtc", "endUtc", "status", "createdAt", "updatedAt"]
+    },
+    "LessonProgress": {
+      "title": "Lesson Progress",
+      "description": "Per-lesson status and teacher notes for a student.",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string", "maxLength": 128 },
+        "lessonId": { "type": "string", "maxLength": 128 },
+        "lessonTitle": { "type": "string", "maxLength": 160 },
+        "levelTitle": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["not_started", "in_progress", "done"] },
+        "teacherNote": { "type": "string", "maxLength": 500 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["studentId", "lessonId", "lessonTitle", "levelTitle", "status", "updatedAt"]
+    },
+    "Resource": {
+      "title": "Learning Resource",
+      "description": "Protected PDF, video, or external link shared by a teacher.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["pdf", "video", "link"] },
+        "title": { "type": "string", "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 500 },
+        "fileKey": { "type": "string", "maxLength": 256 },
+        "url": { "type": "string", "maxLength": 512 },
+        "level": { "type": "string", "maxLength": 80 },
+        "topic": { "type": "string", "maxLength": 80 },
+        "uploaderId": { "type": "string", "maxLength": 128 },
+        "uploaderName": { "type": "string", "maxLength": 120 },
+        "publicToPaid": { "type": "boolean" },
+        "targetStudentIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["type", "title", "level", "topic", "uploaderId", "uploaderName", "publicToPaid", "createdAt", "updatedAt"]
+    },
+    "GroupSession": {
+      "title": "Group Study Session",
+      "description": "Student-created peer practice session.",
+      "type": "object",
+      "properties": {
+        "creatorId": { "type": "string", "maxLength": 128 },
+        "creatorName": { "type": "string", "maxLength": 120 },
+        "title": { "type": "string", "maxLength": 160 },
+        "topic": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 500 },
+        "startUtc": { "type": "string", "maxLength": 64 },
+        "capacity": { "type": "integer" },
+        "locationType": { "type": "string", "enum": ["platform", "external"] },
+        "meetingLink": { "type": "string", "maxLength": 512 },
+        "status": { "type": "string", "enum": ["upcoming", "cancelled", "completed"] },
+        "attendeeIds": { "type": "array" },
+        "attendeeNames": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["creatorId", "creatorName", "title", "topic", "startUtc", "capacity", "locationType", "status", "attendeeIds", "attendeeNames", "createdAt", "updatedAt"]
+    },
+    "Coupon": {
+      "title": "Discount Coupon",
+      "description": "Promotional code applied after team discounts.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "maxLength": 40 },
+        "type": { "type": "string", "enum": ["percent", "fixed"] },
+        "value": { "type": "integer" },
+        "startsAt": { "type": "string", "maxLength": 64 },
+        "endsAt": { "type": "string", "maxLength": 64 },
+        "usageLimit": { "type": "integer" },
+        "usedCount": { "type": "integer" },
+        "perPersonLimit": { "type": "integer" },
+        "planId": { "type": "string", "maxLength": 128 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "type", "value", "usageLimit", "usedCount", "perPersonLimit", "active", "createdAt", "updatedAt"]
+    },
+    "Certificate": {
+      "title": "Level Completion Certificate",
+      "description": "Publicly verifiable certificate with QR verification code.",
+      "type": "object",
+      "properties": {
+        "certCode": { "type": "string", "maxLength": 64 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "learnerName": { "type": "string", "maxLength": 120 },
+        "levelName": { "type": "string", "maxLength": 120 },
+        "planName": { "type": "string", "maxLength": 120 },
+        "issuedAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["certCode", "userId", "learnerName", "levelName", "planName", "issuedAt", "createdAt"]
+    },
+    "Feedback": {
+      "title": "Lesson Feedback",
+      "description": "Student rating after a lesson, visible to admin only.",
+      "type": "object",
+      "properties": {
+        "bookingId": { "type": "string", "maxLength": 128 },
+        "studentId": { "type": "string", "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 120 },
+        "teacherId": { "type": "string", "maxLength": 128 },
+        "teacherName": { "type": "string", "maxLength": 120 },
+        "rating": { "type": "integer" },
+        "comment": { "type": "string", "maxLength": 600 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["bookingId", "studentId", "studentName", "teacherId", "teacherName", "rating", "createdAt"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Portal banner and email announcement from admin.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 160 },
+        "body": { "type": "string", "maxLength": 1000 },
+        "audienceType": { "type": "string", "enum": ["all", "plan", "team", "group"] },
+        "audienceId": { "type": "string", "maxLength": 128 },
+        "authorId": { "type": "string", "maxLength": 128 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "body", "audienceType", "authorId", "active", "createdAt"]
+    },
+    "NotificationItem": {
+      "title": "In-App Notification",
+      "description": "User notification bell item.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 160 },
+        "body": { "type": "string", "maxLength": 400 },
+        "type": { "type": "string", "maxLength": 40 },
+        "link": { "type": "string", "maxLength": 256 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "body", "type", "read", "createdAt"]
+    },
+    "AuditEntry": {
+      "title": "Audit Log Entry",
+      "description": "Immutable admin/payment audit trail.",
+      "type": "object",
+      "properties": {
+        "actorId": { "type": "string", "maxLength": 128 },
+        "actorEmail": { "type": "string", "maxLength": 254 },
+        "action": { "type": "string", "maxLength": 80 },
+        "targetType": { "type": "string", "maxLength": 64 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "summary": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorId", "actorEmail", "action", "targetType", "targetId", "summary", "createdAt"]
+    },
+    "EmailLogEntry": {
+      "title": "Email Log Entry",
+      "description": "Record of dispatched portal email.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "to": { "type": "string", "maxLength": 254 },
+        "subject": { "type": "string", "maxLength": 200 },
+        "type": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["sent", "logged", "failed"] },
+        "previewText": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "to", "subject", "type", "status", "previewText", "createdAt"]
+    },
+    "PortalSettings": {
+      "title": "Portal Settings",
+      "description": "Global portal settings and aggregate stats.",
+      "type": "object",
+      "properties": {
+        "currency": { "type": "string", "maxLength": 8 },
+        "invoiceExpiryDays": { "type": "integer" },
+        "cancelWindowHours": { "type": "integer" },
+        "groupSize": { "type": "integer" },
+        "emailSender": { "type": "string", "maxLength": 120 },
+        "maxUploadMb": { "type": "integer" },
+        "weeklyFlierNote": { "type": "string", "maxLength": 600 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["currency", "invoiceExpiryDays", "cancelWindowHours", "groupSize", "emailSender", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": { "schema": { "$ref": "#/entities/User" }, "description": "User accounts and portal profile fields" },
+    "/portal_plans/{planId}": { "schema": { "$ref": "#/entities/Plan" }, "description": "Kinyarwanda learning plans" },
+    "/portal_invoices/{invoiceId}": { "schema": { "$ref": "#/entities/Invoice" }, "description": "Invoices with pricing snapshots" },
+    "/portal_teams/{teamId}": { "schema": { "$ref": "#/entities/Team" }, "description": "Team accounts" },
+    "/portal_teams/{teamId}/members/{uid}": { "schema": { "$ref": "#/entities/TeamMember" }, "description": "Team seat members" },
+    "/portal_invites/{inviteId}": { "schema": { "$ref": "#/entities/Invite" }, "description": "Single-use expiring team invite tokens" },
+    "/portal_groups/{groupId}": { "schema": { "$ref": "#/entities/StudyGroup" }, "description": "Individual learner study groups" },
+    "/portal_teachers/{uid}": { "schema": { "$ref": "#/entities/TeacherProfile" }, "description": "Teacher profiles and availability" },
+    "/portal_bookings/{bookingId}": { "schema": { "$ref": "#/entities/Booking" }, "description": "1-on-1 lesson bookings" },
+    "/portal_progress/{uid}/lessons/{lessonId}": { "schema": { "$ref": "#/entities/LessonProgress" }, "description": "Learner progress per lesson" },
+    "/portal_resources/{resourceId}": { "schema": { "$ref": "#/entities/Resource" }, "description": "Protected learning resources metadata" },
+    "/portal_sessions/{sessionId}": { "schema": { "$ref": "#/entities/GroupSession" }, "description": "Student-created group sessions" },
+    "/portal_coupons/{code}": { "schema": { "$ref": "#/entities/Coupon" }, "description": "Discount coupons" },
+    "/portal_certificates/{certCode}": { "schema": { "$ref": "#/entities/Certificate" }, "description": "Verifiable level certificates" },
+    "/portal_feedback/{feedbackId}": { "schema": { "$ref": "#/entities/Feedback" }, "description": "Student lesson ratings (admin visible)" },
+    "/portal_announcements/{announcementId}": { "schema": { "$ref": "#/entities/Announcement" }, "description": "Admin announcements" },
+    "/portal_notifications/{uid}/items/{itemId}": { "schema": { "$ref": "#/entities/NotificationItem" }, "description": "User notification bell items" },
+    "/portal_auditLog/{logId}": { "schema": { "$ref": "#/entities/AuditEntry" }, "description": "Audit log entries" },
+    "/portal_emailLog/{logId}": { "schema": { "$ref": "#/entities/EmailLogEntry" }, "description": "Dispatched email log" },
+    "/portal_settings/{settingId}": { "schema": { "$ref": "#/entities/PortalSettings" }, "description": "Portal configuration and counters" }
+  }
+}
