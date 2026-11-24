@@ -1,0 +1,27 @@
+name = "ijwi-portal-worker"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "ijwi-portal-private"
+
+[[queues.producers]]
+binding = "EMAIL_QUEUE"
+queue = "ijwi-email-queue"
+
+[[queues.consumers]]
+queue = "ijwi-email-queue"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+
+[triggers]
+# Hourly reminders & invoice expiry checks + Monday 06:00 UTC weekly digest
+crons = ["0 * * * *", "0 6 * * 1"]
+
+[vars]
+EMAIL_FROM = "Ijwi <noreply@mail.ijwi.me>"
+EMAIL_REPLY_TO = "learn@ijwi.me"
+FIREBASE_PROJECT_ID = "gen-lang-client-0294173474"
+FIRESTORE_DATABASE_ID = "ai-studio-4ec77555-d907-4da1-b5e0-73ee22ec31ec"

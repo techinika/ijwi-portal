@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { doc, getDoc } from 'firebase/firestore';
@@ -8,11 +8,16 @@ import { fetchPublicPlans } from '../lib/seed';
 import { apiFetch } from '../lib/api';
 import { createEnrolmentInvoice } from '../lib/portalActions';
 import { savePendingEnrolment, useAuth } from '../contexts/AuthContext';
-import { formatMoney, type CouponInput, type PriceQuote } from '../shared/pricing';
+import {
+  calculateEnrolmentQuote,
+  formatMoney,
+  type CouponInput,
+  type PriceQuote,
+} from '../shared/pricing';
 import type { PortalCoupon, PortalPlan } from '../types/portal';
 
 export function HomePage() {
-  const { portalUser, signInWithGoogle } = useAuth();
+  const { portalUser, firebaseUser, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
 
   const { data: plans = [], isLoading: plansLoading } = useQuery({
@@ -28,7 +33,10 @@ export function HomePage() {
   const [couponInput, setCouponInput] = useState<string>('');
   const [appliedCoupon, setAppliedCoupon] = useState<CouponInput | null>(null);
   const [couponMessage, setCouponMessage] = useState<string | null>(null);
-  const [quote, setQuote] = useState<PriceQuote | null>(null);
+  const [serverQuoteState, setServerQuoteState] = useState<{
+    key: string;
+    quote: PriceQuote;
+  } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,6 +44,25 @@ export function HomePage() {
     plans.find((p) => p.id === selectedPlanId) || plans[0];
 
   const effectiveSeats = mode === 'individual' ? 1 : Math.max(2, seats);
+
+  const localQuote = useMemo<PriceQuote | null>(() => {
+    if (!selectedPlan) return null;
+    return calculateEnrolmentQuote({
+      unitPriceCents: selectedPlan.unitPriceCents,
+      seats: effectiveSeats,
+      currency: selectedPlan.currency,
+      coupon: appliedCoupon,
+    });
+  }, [selectedPlan, effectiveSeats, appliedCoupon]);
+
+  const quoteKey = selectedPlan
+    ? `${selectedPlan.id}:${selectedPlan.unitPriceCents}:${effectiveSeats}:${appliedCoupon?.code || ''}`
+    : '';
+
+  const quote: PriceQuote | null =
+    serverQuoteState && serverQuoteState.key === quoteKey
+      ? serverQuoteState.quote
+      : localQuote;
 
   useEffect(() => {
     if (!selectedPlanId && plans.length > 0) {
@@ -46,6 +73,7 @@ export function HomePage() {
   useEffect(() => {
     if (!selectedPlan) return;
     let cancelled = false;
+    const currentKey = `${selectedPlan.id}:${selectedPlan.unitPriceCents}:${effectiveSeats}:${appliedCoupon?.code || ''}`;
 
     apiFetch<{ quote: PriceQuote; couponError?: string }>('/api/pricing/quote', {
       method: 'POST',
@@ -59,12 +87,12 @@ export function HomePage() {
     })
       .then((res) => {
         if (!cancelled) {
-          setQuote(res.quote);
+          setServerQuoteState({ key: currentKey, quote: res.quote });
           if (res.couponError) setCouponMessage(res.couponError);
         }
       })
       .catch(() => {
-        // fallback display handled silently
+        // Local calculation remains rendered cleanly if API server is unreachable
       });
 
     return () => {
@@ -115,7 +143,7 @@ export function HomePage() {
     setSubmitting(true);
 
     try {
-      if (!portalUser) {
+      if (!portalUser && !firebaseUser) {
         savePendingEnrolment({
           plan: selectedPlan,
           mode,
@@ -125,12 +153,30 @@ export function HomePage() {
           couponCode: appliedCoupon?.code,
           quote,
         });
-        await signInWithGoogle();
+        const signedInProfile = await signInWithGoogle();
+        if (signedInProfile) {
+          const pendingStillQueued = sessionStorage.getItem('ijwi_pending_enrolment');
+          if (!pendingStillQueued) {
+            return;
+          }
+        }
         return;
       }
 
+      const activeUser =
+        portalUser ||
+        ({
+          uid: firebaseUser!.uid,
+          email: firebaseUser!.email || '',
+          displayName: firebaseUser!.displayName || firebaseUser!.email?.split('@')[0] || 'Learner',
+          role: 'student',
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+          status: 'active',
+          accessActive: false,
+        } as const);
+
       const { invoiceId } = await createEnrolmentInvoice({
-        user: portalUser,
+        user: activeUser,
         plan: selectedPlan,
         mode,
         seats: effectiveSeats,
@@ -494,7 +540,7 @@ export function HomePage() {
                     >
                       {submitting
                         ? 'Creating your invoice...'
-                        : portalUser
+                        : portalUser || firebaseUser
                           ? 'Create invoice & continue'
                           : 'Continue with Google'}
                     </button>

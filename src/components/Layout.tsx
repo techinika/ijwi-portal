@@ -6,8 +6,11 @@ import { formatMoney } from '../shared/pricing';
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const {
+    firebaseUser,
     portalUser,
     loading,
+    authError,
+    clearAuthError,
     unpaidInvoices,
     notifications,
     announcements,
@@ -21,6 +24,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [notifOpen, setNotifOpen] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
 
+  const isSignedIn = Boolean(portalUser || firebaseUser);
+  const displayFirstName = (
+    portalUser?.displayName ||
+    firebaseUser?.displayName ||
+    firebaseUser?.email?.split('@')[0] ||
+    'Account'
+  ).split(' ')[0];
+  const displayAvatar = portalUser?.photoUrl || firebaseUser?.photoURL || '';
   const unreadCount = notifications.filter((n) => !n.read).length;
   const isAdmin = portalUser?.role === 'admin';
   const isTeacher = portalUser?.role === 'teacher';
@@ -37,7 +48,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     !loading && portalUser && !hasAccess && !isBillingOrPublicRoute;
 
   const navLinks = (() => {
-    if (!portalUser) {
+    if (!isSignedIn) {
       return [
         { to: '/', label: 'Enrol' },
         { to: '/#plans', label: 'Plans' },
@@ -75,7 +86,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       { to: '/bookings', label: 'Lessons' },
       { to: '/resources', label: 'Resources' },
       { to: '/sessions', label: 'Community' },
-      ...(portalUser.isTeamOwner || portalUser.teamId
+      ...(portalUser?.isTeamOwner || portalUser?.teamId
         ? [{ to: '/team', label: 'Team' }]
         : [{ to: '/progress', label: 'Progress' }]),
     ];
@@ -85,12 +96,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
     setSigningIn(true);
     try {
       const user = await signInWithGoogle();
-      if (user && !window.location.pathname.startsWith('/invoices/')) {
+      const path = window.location.pathname;
+      const keepCurrentRoute =
+        path.startsWith('/invoices/') ||
+        path.startsWith('/invite/') ||
+        path.startsWith('/verify/');
+      if (user && !keepCurrentRoute) {
         if (user.role === 'admin') navigate('/admin');
         else if (user.role === 'teacher') navigate('/teacher');
         else if (user.accessActive) navigate('/dashboard');
         else navigate('/profile');
       }
+    } catch {
+      // AuthContext populates authError banner visibly
     } finally {
       setSigningIn(false);
     }
@@ -134,7 +152,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
           {/* Zone 3: 1 primary action or user profile controls */}
           <div className="flex items-center gap-3 shrink-0">
-            {portalUser ? (
+            {isSignedIn ? (
               <>
                 <div className="relative">
                   <button
@@ -203,19 +221,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   to="/profile"
                   className="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-[#084F4E]/12 text-sm font-medium text-[#084F4E] hover:bg-[#E6F4F4] transition-colors whitespace-nowrap shrink-0"
                 >
-                  {portalUser.photoUrl ? (
+                  {displayAvatar ? (
                     <img
-                      src={portalUser.photoUrl}
-                      alt={portalUser.displayName}
+                      src={displayAvatar}
+                      alt={displayFirstName}
                       referrerPolicy="no-referrer"
                       className="w-5 h-5 rounded-full object-cover"
                     />
                   ) : (
                     <UserIcon className="w-4 h-4" />
                   )}
-                  <span className="max-w-[120px] truncate">
-                    {portalUser.displayName.split(' ')[0]}
-                  </span>
+                  <span className="max-w-[120px] truncate">{displayFirstName}</span>
                 </Link>
 
                 <button
@@ -263,14 +279,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 {item.label}
               </Link>
             ))}
-            {portalUser && (
+            {isSignedIn && (
               <>
                 <Link
                   to="/profile"
                   onClick={() => setMobileOpen(false)}
                   className="block px-3 py-2.5 rounded-xl text-sm font-medium text-[#1F2A2A] hover:bg-[#E6F4F4]"
                 >
-                  Profile &amp; Billing
+                  Profile &amp; Billing ({displayFirstName})
                 </Link>
                 <button
                   type="button"
@@ -287,6 +303,25 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         )}
       </header>
+
+      {/* Sign-in error banner (visible if Firebase rejects domain or popup) */}
+      {authError && (
+        <div role="alert" className="bg-red-50 border-b border-red-200">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex items-start justify-between gap-4 text-sm text-red-900">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" />
+              <span>{authError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={clearAuthError}
+              className="text-xs font-medium text-red-800 hover:underline shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Unpaid invoice banner */}
       {!loading && portalUser && !hasAccess && unpaidInvoices.length > 0 && (

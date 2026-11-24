@@ -1,5 +1,12 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import {
+  getRedirectResult,
+  onAuthStateChanged,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+  type User,
+} from 'firebase/auth';
 import {
   collection,
   doc,
@@ -12,10 +19,11 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../lib/firebase';
+import { auth, db, googleProvider } from '../lib/firebase';
 import { ensurePortalSeeded } from '../lib/seed';
 import { createEnrolmentInvoice, dispatchPortalEmail } from '../lib/portalActions';
 import { apiFetch } from '../lib/api';
+import { calculateEnrolmentQuote, type PriceQuote } from '../shared/pricing';
 import type {
   Announcement,
   NotificationItem,
@@ -23,7 +31,6 @@ import type {
   PortalPlan,
   PortalUser,
 } from '../types/portal';
-import type { PriceQuote } from '../shared/pricing';
 
 export interface PendingEnrolment {
   plan: PortalPlan;
@@ -58,6 +65,8 @@ interface AuthContextValue {
   firebaseUser: User | null;
   portalUser: PortalUser | null;
   loading: boolean;
+  authError: string | null;
+  clearAuthError: () => void;
   unpaidInvoices: PortalInvoice[];
   notifications: NotificationItem[];
   announcements: Announcement[];
@@ -70,41 +79,108 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const BOOTSTRAP_ADMIN_EMAIL = 'kiny.study@gmail.com';
 
+function normalizePortalUser(
+  raw: Partial<PortalUser> & Record<string, unknown>,
+  fbUser: User
+): PortalUser {
+  const isBootstrapAdmin =
+    fbUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL && fbUser.emailVerified;
+  const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const role =
+    isBootstrapAdmin
+      ? 'admin'
+      : raw.role === 'admin' || raw.role === 'teacher' || raw.role === 'student'
+        ? raw.role
+        : 'student';
+
+  return {
+    uid: (typeof raw.uid === 'string' && raw.uid) || fbUser.uid,
+    email: (typeof raw.email === 'string' && raw.email) || fbUser.email || '',
+    displayName:
+      (typeof raw.displayName === 'string' && raw.displayName) ||
+      (typeof raw.name === 'string' && raw.name) ||
+      fbUser.displayName ||
+      fbUser.email?.split('@')[0] ||
+      'Learner',
+    photoUrl:
+      (typeof raw.photoUrl === 'string' && raw.photoUrl) ||
+      (typeof raw.photoURL === 'string' && raw.photoURL) ||
+      fbUser.photoURL ||
+      '',
+    role,
+    timezone: (typeof raw.timezone === 'string' && raw.timezone) || detectedTz,
+    organisation: typeof raw.organisation === 'string' ? raw.organisation : undefined,
+    status: raw.status === 'suspended' ? 'suspended' : 'active',
+    teamId: typeof raw.teamId === 'string' ? raw.teamId : undefined,
+    groupId: typeof raw.groupId === 'string' ? raw.groupId : undefined,
+    teacherId: typeof raw.teacherId === 'string' ? raw.teacherId : undefined,
+    accessActive: isBootstrapAdmin ? true : Boolean(raw.accessActive),
+    isTeamOwner: Boolean(raw.isTeamOwner),
+    placementLevel: typeof raw.placementLevel === 'string' ? raw.placementLevel : undefined,
+    noShowCount: typeof raw.noShowCount === 'number' ? raw.noShowCount : 0,
+    lateCancelCount: typeof raw.lateCancelCount === 'number' ? raw.lateCancelCount : 0,
+    emailPrefs:
+      raw.emailPrefs && typeof raw.emailPrefs === 'object'
+        ? (raw.emailPrefs as PortalUser['emailPrefs'])
+        : {
+            reminders: true,
+            weeklyDigest: true,
+            community: true,
+            announcements: true,
+          },
+    createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt,
+  };
+}
+
+function formatFirebaseAuthError(err: unknown): string {
+  const code =
+    typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: unknown }).code || '')
+      : '';
+  const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+
+  switch (code) {
+    case 'auth/unauthorized-domain':
+      return `Google sign-in is not yet authorized for "${host}". Add "${host}" in Firebase Console → Authentication → Settings → Authorized domains.`;
+    case 'auth/popup-blocked':
+      return 'Your browser blocked the Google sign-in popup. Please allow popups for this site and try again.';
+    case 'auth/popup-closed-by-user':
+      return 'Sign-in was cancelled before completing.';
+    case 'auth/cancelled-popup-request':
+      return 'A sign-in popup is already open. Please finish signing in there.';
+    case 'auth/network-request-failed':
+      return 'Network error contacting Google sign-in. Check your connection and try again.';
+    case 'auth/invalid-api-key':
+    case 'auth/configuration-not-found':
+      return 'Firebase configuration is invalid or incomplete on this deployment. Verify your VITE_FIREBASE_* environment variables.';
+    default:
+      return err instanceof Error ? err.message : 'Unable to sign in with Google right now.';
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [portalUser, setPortalUser] = useState<PortalUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [unpaidInvoices, setUnpaidInvoices] = useState<PortalInvoice[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
 
-  useEffect(() => {
-    let unsubUser: (() => void) | undefined;
-    let unsubInvoices: (() => void) | undefined;
-    let unsubNotifications: (() => void) | undefined;
-    let unsubAnnouncements: (() => void) | undefined;
+  // Single-flight lock per uid so onAuthStateChanged & signInWithGoogle never race on setDoc
+  const profileInFlight = useRef<Map<string, Promise<PortalUser>>>(new Map());
 
-    const unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
-      setFirebaseUser(fbUser);
-      if (unsubUser) unsubUser();
-      if (unsubInvoices) unsubInvoices();
-      if (unsubNotifications) unsubNotifications();
-      if (unsubAnnouncements) unsubAnnouncements();
+  async function ensureUserProfile(fbUser: User): Promise<PortalUser> {
+    const existingPromise = profileInFlight.current.get(fbUser.uid);
+    if (existingPromise) return existingPromise;
 
-      if (!fbUser) {
-        setPortalUser(null);
-        setUnpaidInvoices([]);
-        setNotifications([]);
-        setAnnouncements([]);
-        setLoading(false);
-        return;
-      }
-
+    const task = (async (): Promise<PortalUser> => {
       const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
       const isBootstrapAdmin =
         fbUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL && fbUser.emailVerified;
-
       const userRef = doc(db, 'users', fbUser.uid);
+
       try {
         const snap = await getDoc(userRef);
         if (!snap.exists()) {
@@ -146,31 +222,135 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             ctaUrl: '/',
             essential: true,
           });
-        } else if (isBootstrapAdmin && snap.data().role !== 'admin') {
+
+          return normalizePortalUser(newProfile as Record<string, unknown>, fbUser);
+        }
+
+        const rawData = snap.data() as Record<string, unknown>;
+        if (isBootstrapAdmin && rawData.role !== 'admin') {
           await updateDoc(userRef, {
             role: 'admin',
             accessActive: true,
             updatedAt: serverTimestamp(),
+          }).catch(() => {
+            // ignore if existing doc schema differs; normalized profile still grants UI access
           });
         }
+        return normalizePortalUser(rawData, fbUser);
       } catch (err) {
-        console.error('Error ensuring user profile:', err);
+        console.error('Error ensuring user profile in Firestore:', err);
+        return normalizePortalUser({}, fbUser);
+      }
+    })();
+
+    profileInFlight.current.set(fbUser.uid, task);
+    try {
+      return await task;
+    } finally {
+      profileInFlight.current.delete(fbUser.uid);
+    }
+  }
+
+  async function processPendingEnrolment(activeProfile: PortalUser): Promise<void> {
+    const pending = loadPendingEnrolment();
+    if (!pending) return;
+    clearPendingEnrolment();
+
+    let verifiedQuote = calculateEnrolmentQuote({
+      unitPriceCents: pending.plan.unitPriceCents,
+      seats: pending.seats,
+      currency: pending.plan.currency,
+    });
+    try {
+      const res = await apiFetch<{ quote: PriceQuote }>('/api/pricing/quote', {
+        method: 'POST',
+        body: JSON.stringify({
+          planId: pending.plan.id,
+          unitPriceCents: pending.plan.unitPriceCents,
+          seats: pending.seats,
+          currency: pending.plan.currency,
+        }),
+      });
+      verifiedQuote = res.quote;
+    } catch {
+      verifiedQuote = pending.quote || verifiedQuote;
+    }
+
+    const { invoiceId } = await createEnrolmentInvoice({
+      user: activeProfile,
+      plan: pending.plan,
+      mode: pending.mode,
+      seats: pending.seats,
+      ownerIsLearner: pending.ownerIsLearner,
+      organisation: pending.organisation,
+      couponCode: pending.couponCode,
+      quote: pending.quote || verifiedQuote,
+    });
+    window.history.pushState({}, '', `/invoices/${invoiceId}`);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }
+
+  useEffect(() => {
+    let unsubUser: (() => void) | undefined;
+    let unsubInvoices: (() => void) | undefined;
+    let unsubNotifications: (() => void) | undefined;
+    let unsubAnnouncements: (() => void) | undefined;
+
+    // Complete redirect sign-in flow if a mobile/popup-blocked browser used signInWithRedirect
+    void getRedirectResult(auth)
+      .then(async (result) => {
+        if (result?.user) {
+          const profile = await ensureUserProfile(result.user);
+          setPortalUser(profile);
+          await processPendingEnrolment(profile);
+        }
+      })
+      .catch((err) => {
+        setAuthError(formatFirebaseAuthError(err));
+      });
+
+    const unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
+      setFirebaseUser(fbUser);
+      if (unsubUser) unsubUser();
+      if (unsubInvoices) unsubInvoices();
+      if (unsubNotifications) unsubNotifications();
+      if (unsubAnnouncements) unsubAnnouncements();
+
+      if (!fbUser) {
+        setPortalUser(null);
+        setUnpaidInvoices([]);
+        setNotifications([]);
+        setAnnouncements([]);
+        setLoading(false);
+        return;
       }
 
+      setAuthError(null);
+
+      // Immediately set an optimistic normalized profile so the navbar updates at once
+      setPortalUser((prev) => prev && prev.uid === fbUser.uid ? prev : normalizePortalUser({}, fbUser));
+
+      const ensured = await ensureUserProfile(fbUser);
+      setPortalUser(ensured);
+
+      const isBootstrapAdmin =
+        fbUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL && fbUser.emailVerified;
       if (isBootstrapAdmin) {
         void ensurePortalSeeded(true);
       }
 
+      const userRef = doc(db, 'users', fbUser.uid);
       unsubUser = onSnapshot(
         userRef,
         (docSnap) => {
           if (docSnap.exists()) {
-            setPortalUser(docSnap.data() as PortalUser);
+            setPortalUser(normalizePortalUser(docSnap.data() as Record<string, unknown>, fbUser));
           }
           setLoading(false);
         },
         (error) => {
-          handleFirestoreError(error, OperationType.GET, `users/${fbUser.uid}`);
+          console.warn('User snapshot error:', error);
+          setLoading(false);
         }
       );
 
@@ -187,7 +367,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUnpaidInvoices(list);
         },
         (error) => {
-          handleFirestoreError(error, OperationType.LIST, 'portal_invoices');
+          console.warn('Invoice listener error:', error);
         }
       );
 
@@ -235,86 +415,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   async function signInWithGoogle(): Promise<PortalUser | null> {
-    const cred = await signInWithPopup(auth, googleProvider);
-    const fbUser = cred.user;
-    const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-    const isBootstrapAdmin =
-      fbUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL && fbUser.emailVerified;
+    setAuthError(null);
+    try {
+      const cred = await signInWithPopup(auth, googleProvider);
+      const fbUser = cred.user;
+      setFirebaseUser(fbUser);
 
-    const userRef = doc(db, 'users', fbUser.uid);
-    let userSnap = await getDoc(userRef);
-    if (!userSnap.exists()) {
-      const profile: PortalUser = {
-        uid: fbUser.uid,
-        email: fbUser.email || '',
-        displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'Learner',
-        photoUrl: fbUser.photoURL || '',
-        role: isBootstrapAdmin ? 'admin' : 'student',
-        timezone: detectedTz,
-        status: 'active',
-        accessActive: isBootstrapAdmin,
-        isTeamOwner: false,
-        noShowCount: 0,
-        lateCancelCount: 0,
-        emailPrefs: {
-          reminders: true,
-          weeklyDigest: true,
-          community: true,
-          announcements: true,
-        },
-      };
-      await setDoc(userRef, {
-        ...profile,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      userSnap = await getDoc(userRef);
-    }
+      const activeProfile = await ensureUserProfile(fbUser);
+      setPortalUser(activeProfile);
+      setLoading(false);
 
-    const activeProfile = userSnap.data() as PortalUser;
-    if (isBootstrapAdmin) {
-      await ensurePortalSeeded(true);
-    }
-
-    // Check if visitor queued an enrolment before signing in
-    const pending = loadPendingEnrolment();
-    if (pending) {
-      clearPendingEnrolment();
-      // Re-verify quote on server before creating invoice
-      let verifiedQuote = pending.quote;
-      try {
-        const res = await apiFetch<{ quote: PriceQuote }>('/api/pricing/quote', {
-          method: 'POST',
-          body: JSON.stringify({
-            planId: pending.plan.id,
-            unitPriceCents: pending.plan.unitPriceCents,
-            seats: pending.seats,
-            currency: pending.plan.currency,
-          }),
-        });
-        verifiedQuote = res.quote;
-      } catch {
-        // use pending server-calculated quote
+      const isBootstrapAdmin =
+        fbUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL && fbUser.emailVerified;
+      if (isBootstrapAdmin) {
+        await ensurePortalSeeded(true);
       }
 
-      const { invoiceId } = await createEnrolmentInvoice({
-        user: activeProfile,
-        plan: pending.plan,
-        mode: pending.mode,
-        seats: pending.seats,
-        ownerIsLearner: pending.ownerIsLearner,
-        organisation: pending.organisation,
-        couponCode: pending.couponCode,
-        quote: pending.quote || verifiedQuote,
-      });
-      window.history.pushState({}, '', `/invoices/${invoiceId}`);
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    }
+      await processPendingEnrolment(activeProfile);
+      return activeProfile;
+    } catch (err) {
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: unknown }).code || '')
+          : '';
 
-    return activeProfile;
+      // If browser blocked popup and we are in a top-level window (e.g. Vercel / mobile), fall back to redirect
+      if (code === 'auth/popup-blocked' && typeof window !== 'undefined' && window.self === window.top) {
+        await signInWithRedirect(auth, googleProvider);
+        return null;
+      }
+
+      const msg = formatFirebaseAuthError(err);
+      setAuthError(msg);
+      throw new Error(msg);
+    }
   }
 
   async function logout() {
+    setAuthError(null);
     await signOut(auth);
   }
 
@@ -331,6 +469,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         firebaseUser,
         portalUser,
         loading,
+        authError,
+        clearAuthError: () => setAuthError(null),
         unpaidInvoices,
         notifications,
         announcements,

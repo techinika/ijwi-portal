@@ -4,7 +4,6 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { z } from 'zod';
 import { jsPDF } from 'jspdf';
@@ -19,9 +18,50 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const firebaseConfigPath = path.resolve(__dirname, 'firebase-applet-config.json');
-const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf-8')) as {
-  projectId: string;
-};
+let fileProjectId = 'gen-lang-client-0294173474';
+try {
+  if (fs.existsSync(firebaseConfigPath)) {
+    const parsedCfg = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf-8')) as {
+      projectId?: string;
+    };
+    if (parsedCfg.projectId) fileProjectId = parsedCfg.projectId;
+  }
+} catch {
+  // fall back to environment variables
+}
+const FIREBASE_PROJECT_ID = (
+  process.env.FIREBASE_PROJECT_ID ||
+  process.env.VITE_FIREBASE_PROJECT_ID ||
+  fileProjectId
+).trim();
+
+function getWorkerConfig(): { baseUrl: string; sharedSecret: string } | null {
+  const rawUrl = process.env.CF_WORKER_URL?.trim();
+  const sharedSecret = process.env.CF_WORKER_SHARED_SECRET?.trim();
+  if (!rawUrl || !sharedSecret || sharedSecret.length < 16) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    const isProd = process.env.NODE_ENV === 'production';
+    if (parsed.protocol !== 'https:' && (isProd || parsed.protocol !== 'http:')) {
+      return null;
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === '169.254.169.254' ||
+      host === 'metadata.google.internal' ||
+      host.startsWith('169.254.') ||
+      (isProd && (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0'))
+    ) {
+      return null;
+    }
+    return {
+      baseUrl: parsed.origin + parsed.pathname.replace(/\/+$/, ''),
+      sharedSecret,
+    };
+  } catch {
+    return null;
+  }
+}
 
 const PORT = Number(process.env.PORT || 3000);
 const SIGNING_SECRET =
@@ -29,15 +69,25 @@ const SIGNING_SECRET =
     ? process.env.INTERNAL_SIGNING_SECRET
     : crypto.randomBytes(32).toString('hex');
 
-const PRIVATE_UPLOAD_DIR = path.resolve(__dirname, '.private_uploads');
-if (!fs.existsSync(PRIVATE_UPLOAD_DIR)) {
-  fs.mkdirSync(PRIVATE_UPLOAD_DIR, { recursive: true });
+const PRIVATE_UPLOAD_DIR = process.env.VERCEL
+  ? '/tmp/.private_uploads'
+  : path.resolve(__dirname, '.private_uploads');
+try {
+  if (!fs.existsSync(PRIVATE_UPLOAD_DIR)) {
+    fs.mkdirSync(PRIVATE_UPLOAD_DIR, { recursive: true });
+  }
+} catch {
+  // ignore read-only FS in serverless environments
 }
 
 // Seed a real multi-page Kinyarwanda Study Guide PDF into private storage so the protected viewer works out of the box
 function ensureStarterPdf() {
-  const starterPdfPath = path.join(PRIVATE_UPLOAD_DIR, 'kinyarwanda-foundations-guide.pdf');
-  if (fs.existsSync(starterPdfPath)) return;
+  try {
+    if (!fs.existsSync(PRIVATE_UPLOAD_DIR)) {
+      fs.mkdirSync(PRIVATE_UPLOAD_DIR, { recursive: true });
+    }
+    const starterPdfPath = path.join(PRIVATE_UPLOAD_DIR, 'kinyarwanda-foundations-guide.pdf');
+    if (fs.existsSync(starterPdfPath)) return;
 
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
   doc.setFillColor(8, 79, 78);
@@ -114,8 +164,11 @@ function ensureStarterPdf() {
     py += 34;
   }
 
-  const buffer = Buffer.from(doc.output('arraybuffer'));
-  fs.writeFileSync(starterPdfPath, buffer);
+    const buffer = Buffer.from(doc.output('arraybuffer'));
+    fs.writeFileSync(starterPdfPath, buffer);
+  } catch (err) {
+    console.warn('Starter PDF generation skipped:', err);
+  }
 }
 
 ensureStarterPdf();
@@ -145,8 +198,8 @@ async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction
     }
     const token = authHeader.slice(7).trim();
     const { payload } = await jwtVerify(token, FIREBASE_JWKS, {
-      issuer: `https://securetoken.google.com/${firebaseConfig.projectId}`,
-      audience: firebaseConfig.projectId,
+      issuer: `https://securetoken.google.com/${FIREBASE_PROJECT_ID}`,
+      audience: FIREBASE_PROJECT_ID,
     });
     const uid = typeof payload.sub === 'string' ? payload.sub : '';
     const email = typeof payload.email === 'string' ? payload.email : '';
@@ -245,7 +298,7 @@ async function getPesapalToken(): Promise<string | null> {
   return data.token;
 }
 
-async function startServer() {
+export function createApiApp() {
   const app = express();
   app.use(express.json({ limit: '110mb' }));
 
@@ -285,6 +338,7 @@ async function startServer() {
       pesapalConfigured: Boolean(process.env.PESAPAL_CONSUMER_KEY && process.env.PESAPAL_CONSUMER_SECRET),
       pesapalMode: process.env.PESAPAL_MODE === 'live' ? 'live' : 'sandbox',
       resendConfigured: Boolean(process.env.RESEND_API_KEY),
+      workerConfigured: Boolean(getWorkerConfig()),
     });
   });
 
@@ -749,6 +803,37 @@ async function startServer() {
         </div>
       `;
 
+      const worker = getWorkerConfig();
+      if (worker) {
+        try {
+          const wRes = await fetch(`${worker.baseUrl}/emails/enqueue`, {
+            method: 'POST',
+            headers: {
+              'X-Ijwi-Worker-Secret': worker.sharedSecret,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              to: emailData.to,
+              subject: emailData.subject,
+              html,
+              text: plainText,
+            }),
+          });
+          if (wRes.ok) {
+            const wJson = (await wRes.json().catch(() => ({}))) as { status?: string };
+            res.json({
+              status: wJson.status === 'logged' ? 'logged' : 'sent',
+              delivery: wJson.status || 'queued',
+              subject: emailData.subject,
+              previewText: plainText.slice(0, 480),
+            });
+            return;
+          }
+        } catch {
+          // Fall through to direct Resend or logged mode if Worker is temporarily unreachable
+        }
+      }
+
       const resendKey = process.env.RESEND_API_KEY;
       if (resendKey) {
         try {
@@ -808,7 +893,7 @@ async function startServer() {
     base64Data: z.string().min(1),
   });
 
-  app.post('/api/resources/upload', requireAuth, (req: AuthedRequest, res: Response) => {
+  app.post('/api/resources/upload', requireAuth, async (req: AuthedRequest, res: Response) => {
     const parsed = uploadSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'Only PDF and MP4/WebM video uploads are supported.' });
@@ -826,6 +911,31 @@ async function startServer() {
 
     const ext = mimeType === 'application/pdf' ? '.pdf' : mimeType === 'video/mp4' ? '.mp4' : '.webm';
     const fileKey = `res-${crypto.randomUUID()}${ext}`;
+
+    const worker = getWorkerConfig();
+    if (worker) {
+      try {
+        const wRes = await fetch(`${worker.baseUrl}/r2/objects/${encodeURIComponent(fileKey)}`, {
+          method: 'PUT',
+          headers: {
+            'X-Ijwi-Worker-Secret': worker.sharedSecret,
+            'Content-Type': mimeType,
+          },
+          body: new Uint8Array(buf),
+        });
+        if (!wRes.ok) {
+          const detail = await wRes.text();
+          res.status(502).json({ error: `R2 upload failed: ${detail}` });
+          return;
+        }
+        res.json({ fileKey, sizeBytes: buf.length, storage: 'r2' });
+        return;
+      } catch (err) {
+        res.status(502).json({ error: err instanceof Error ? err.message : 'Cloudflare Worker upload error.' });
+        return;
+      }
+    }
+
     const resolved = path.resolve(PRIVATE_UPLOAD_DIR, fileKey);
     if (!resolved.startsWith(PRIVATE_UPLOAD_DIR + path.sep)) {
       res.status(400).json({ error: 'Invalid upload destination.' });
@@ -833,7 +943,7 @@ async function startServer() {
     }
 
     fs.writeFileSync(resolved, buf);
-    res.json({ fileKey, sizeBytes: buf.length });
+    res.json({ fileKey, sizeBytes: buf.length, storage: 'local' });
   });
 
   // Issue short-lived signed stream ticket for authenticated users
@@ -845,7 +955,7 @@ async function startServer() {
       .regex(/^[a-zA-Z0-9._\-]+$/),
   });
 
-  app.post('/api/resources/stream-ticket', requireAuth, (req: AuthedRequest, res: Response) => {
+  app.post('/api/resources/stream-ticket', requireAuth, async (req: AuthedRequest, res: Response) => {
     const parsed = ticketSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'Invalid file key.' });
@@ -853,7 +963,23 @@ async function startServer() {
     }
     const { fileKey } = parsed.data;
     const resolved = path.resolve(PRIVATE_UPLOAD_DIR, fileKey);
-    if (!resolved.startsWith(PRIVATE_UPLOAD_DIR + path.sep) || !fs.existsSync(resolved)) {
+    const existsLocally = resolved.startsWith(PRIVATE_UPLOAD_DIR + path.sep) && fs.existsSync(resolved);
+
+    let existsInR2 = false;
+    const worker = getWorkerConfig();
+    if (!existsLocally && worker) {
+      try {
+        const headRes = await fetch(`${worker.baseUrl}/r2/objects/${encodeURIComponent(fileKey)}`, {
+          method: 'HEAD',
+          headers: { 'X-Ijwi-Worker-Secret': worker.sharedSecret },
+        });
+        existsInR2 = headRes.ok;
+      } catch {
+        existsInR2 = false;
+      }
+    }
+
+    if (!existsLocally && !existsInR2) {
       res.status(404).json({ error: 'Resource file not found.' });
       return;
     }
@@ -868,7 +994,7 @@ async function startServer() {
   });
 
   // Protected private streaming with HTTP Range support (no download, no public URLs)
-  app.get('/api/resources/stream/:fileKey', (req, res) => {
+  app.get('/api/resources/stream/:fileKey', async (req, res) => {
     const fileKey = String(req.params.fileKey || '');
     const uid = String(req.query.uid || '');
     const exp = Number(req.query.exp || 0);
@@ -889,7 +1015,60 @@ async function startServer() {
     }
 
     const resolved = path.resolve(PRIVATE_UPLOAD_DIR, fileKey);
-    if (!resolved.startsWith(PRIVATE_UPLOAD_DIR + path.sep) || !fs.existsSync(resolved)) {
+    const existsLocally = resolved.startsWith(PRIVATE_UPLOAD_DIR + path.sep) && fs.existsSync(resolved);
+
+    const worker = getWorkerConfig();
+    if (!existsLocally && worker) {
+      try {
+        const forwardHeaders: Record<string, string> = {
+          'X-Ijwi-Worker-Secret': worker.sharedSecret,
+        };
+        if (req.headers.range) {
+          forwardHeaders.Range = req.headers.range;
+        }
+        const wRes = await fetch(`${worker.baseUrl}/r2/objects/${encodeURIComponent(fileKey)}`, {
+          method: 'GET',
+          headers: forwardHeaders,
+        });
+        if (!wRes.ok && wRes.status !== 206) {
+          res.status(wRes.status === 416 ? 416 : 404).json({ error: 'File not found.' });
+          return;
+        }
+        res.status(wRes.status);
+        res.setHeader('Content-Disposition', 'inline');
+        res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Accept-Ranges', 'bytes');
+        const passHeaders = ['content-type', 'content-length', 'content-range'];
+        for (const h of passHeaders) {
+          const val = wRes.headers.get(h);
+          if (val) res.setHeader(h, val);
+        }
+        if (wRes.body) {
+          const reader = wRes.body.getReader();
+          const pump = async () => {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                res.end();
+                break;
+              }
+              if (value) res.write(Buffer.from(value));
+            }
+          };
+          await pump();
+          return;
+        }
+        const buf = Buffer.from(await wRes.arrayBuffer());
+        res.send(buf);
+        return;
+      } catch {
+        res.status(502).json({ error: 'Failed to stream resource from storage.' });
+        return;
+      }
+    }
+
+    if (!existsLocally) {
       res.status(404).json({ error: 'File not found.' });
       return;
     }
@@ -971,6 +1150,12 @@ async function startServer() {
     res.send(ics);
   });
 
+  return app;
+}
+
+async function startServer() {
+  const app = createApiApp();
+
   // Vite middleware in development, static dist in production
   if (process.env.NODE_ENV === 'production') {
     const distDir = path.resolve(__dirname, 'dist');
@@ -979,6 +1164,7 @@ async function startServer() {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -991,7 +1177,9 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}
