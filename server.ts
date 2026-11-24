@@ -298,8 +298,29 @@ async function getPesapalToken(): Promise<string | null> {
   return data.token;
 }
 
+function getPublicBaseUrl(req: Request): string {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim();
+  const proto = forwardedProto || req.protocol || 'https';
+  const host = String(req.get('x-forwarded-host') || req.get('host') || '');
+  if (host) {
+    return `${proto}://${host}`;
+  }
+  const configured = process.env.APP_URL?.trim();
+  if (configured && configured !== 'MY_APP_URL') {
+    try {
+      return new URL(configured).origin;
+    } catch {
+      // ignore invalid APP_URL
+    }
+  }
+  return `http://localhost:${PORT}`;
+}
+
 export function createApiApp() {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '110mb' }));
 
   // Strict CORS for authenticated endpoints (same-origin or configured APP_URL)
@@ -458,10 +479,11 @@ export function createApiApp() {
       try {
         const token = await getPesapalToken();
         if (token) {
+          const baseUrl = getPublicBaseUrl(req);
           const origin =
             data.callbackUrl ||
             process.env.PESAPAL_CALLBACK_URL ||
-            `${req.protocol}://${req.get('host')}/invoices/${data.invoiceId}`;
+            `${baseUrl}/invoices/${data.invoiceId}`;
           let ipnId = process.env.PESAPAL_IPN_ID || '';
           if (!ipnId) {
             const ipnRes = await fetch(`${getPesapalBaseUrl()}/api/URLSetup/RegisterIPN`, {
@@ -471,7 +493,7 @@ export function createApiApp() {
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({
-                url: `${req.protocol}://${req.get('host')}/api/payments/pesapal/ipn`,
+                url: `${baseUrl}/api/payments/pesapal/ipn`,
                 ipn_notification_type: 'POST',
               }),
             });
@@ -751,10 +773,11 @@ export function createApiApp() {
       }
       const emailData = parsed.data;
       const firstName = (emailData.recipientName || 'Learner').split(' ')[0];
+      const baseUrl = getPublicBaseUrl(req);
       const safeCtaUrl =
         emailData.ctaUrl && /^https?:\/\//i.test(emailData.ctaUrl)
           ? emailData.ctaUrl
-          : `${req.protocol}://${req.get('host')}${emailData.ctaUrl || '/'}`;
+          : `${baseUrl}${emailData.ctaUrl || '/'}`;
 
       const plainText = [
         `Muraho, ${firstName}`,
@@ -768,7 +791,7 @@ export function createApiApp() {
         'Ijwi Kinyarwanda Academy · learn@ijwi.me',
         emailData.essential
           ? 'This is an essential account or receipt message.'
-          : `Manage email preferences: ${req.protocol}://${req.get('host')}/profile`,
+          : `Manage email preferences: ${baseUrl}/profile`,
       ]
         .filter(Boolean)
         .join('\n');
@@ -797,7 +820,7 @@ export function createApiApp() {
             ${
               emailData.essential
                 ? 'Essential billing or account security notice.'
-                : `You can adjust notification preferences anytime in your <a href="${escapeHtml(`${req.protocol}://${req.get('host')}/profile`)}" style="color:#0E7C7B;">Profile settings</a>.`
+                : `You can adjust notification preferences anytime in your <a href="${escapeHtml(`${baseUrl}/profile`)}" style="color:#0E7C7B;">Profile settings</a>.`
             }
           </p>
         </div>
