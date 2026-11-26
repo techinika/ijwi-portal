@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import {
   collection,
   doc,
@@ -12,9 +13,10 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { Copy, Plus, Trash2, UserPlus, Mail, Target } from 'lucide-react';
+import { Copy, Plus, Minus, Trash2, UserPlus, Mail, Target } from 'lucide-react';
 import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { apiFetch } from '../lib/api';
 import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import {
@@ -28,10 +30,15 @@ import type { PortalInvite, PortalInvoice, PortalPlan, PortalTeam, TeamMember } 
 
 export function TeamPage() {
   const { portalUser } = useAuth();
+  const { toast } = useToast();
   const navigate = useNavigate();
   const [team, setTeam] = useState<PortalTeam | null>(null);
   const [teamLoading, setTeamLoading] = useState(Boolean(portalUser?.teamId));
-  const [allPlans, setAllPlans] = useState<PortalPlan[]>(DEFAULT_PLANS);
+  const { data: queriedPlans = [] } = useQuery({
+    queryKey: ['all_active_plans'],
+    queryFn: fetchAllActivePlans,
+  });
+  const allPlans = queriedPlans.length > 0 ? queriedPlans : DEFAULT_PLANS;
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [invites, setInvites] = useState<PortalInvite[]>([]);
   const [latestLinks, setLatestLinks] = useState<Record<string, string>>({});
@@ -39,6 +46,7 @@ export function TeamPage() {
   const [creatingInvite, setCreatingInvite] = useState(false);
 
   const [addSeatsCount, setAddSeatsCount] = useState(2);
+  const [addSeatsDraft, setAddSeatsDraft] = useState('2');
   const [serverTopUpQuote, setServerTopUpQuote] = useState<PriceQuote | null>(null);
   const [alreadyPaidCents, setAlreadyPaidCents] = useState(0);
   const [creatingTopUp, setCreatingTopUp] = useState(false);
@@ -46,13 +54,7 @@ export function TeamPage() {
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
 
   useEffect(() => {
-    void fetchAllActivePlans().then((list) => {
-      if (list.length > 0) setAllPlans(list);
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!portalUser?.teamId) {
+    if (!portalUser?.uid || !portalUser.teamId) {
       setTeam(null);
       setTeamLoading(false);
       return;
@@ -125,7 +127,7 @@ export function TeamPage() {
       unsubMembers();
       unsubInvites();
     };
-  }, [portalUser]);
+  }, [portalUser?.uid, portalUser?.teamId]);
 
   const isOwner = Boolean(portalUser && team && team.ownerId === portalUser.uid);
 
@@ -155,27 +157,36 @@ export function TeamPage() {
   useEffect(() => {
     if (!team || !isOwner) return;
     let cancelled = false;
-    apiFetch<{ quote: PriceQuote }>('/api/pricing/quote', {
-      method: 'POST',
-      body: JSON.stringify({
-        planId: team.planId,
-        unitPriceCents: primaryTeamPlan.unitPriceCents,
-        seats: addSeatsCount,
-        currency: primaryTeamPlan.currency,
-        existingSeats: team.seatsTotal,
-        alreadyPaidCents,
-      }),
-    })
-      .then((res) => {
-        if (!cancelled) setServerTopUpQuote(res.quote);
+    const timer = window.setTimeout(() => {
+      apiFetch<{ quote: PriceQuote }>('/api/pricing/quote', {
+        method: 'POST',
+        body: JSON.stringify({
+          planId: team.planId,
+          unitPriceCents: primaryTeamPlan.unitPriceCents,
+          seats: addSeatsCount,
+          currency: primaryTeamPlan.currency,
+          existingSeats: team.seatsTotal,
+          alreadyPaidCents,
+        }),
       })
-      .catch(() => {});
+        .then((res) => {
+          if (!cancelled) setServerTopUpQuote(res.quote);
+        })
+        .catch(() => {});
+    }, 250);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [team, isOwner, primaryTeamPlan, addSeatsCount, alreadyPaidCents]);
+  }, [team?.id, team?.planId, team?.seatsTotal, isOwner, primaryTeamPlan.unitPriceCents, primaryTeamPlan.currency, addSeatsCount, alreadyPaidCents]);
 
   const topUpQuote = serverTopUpQuote || localTopUpQuote;
+
+  const updateAddSeats = (next: number) => {
+    const clamped = Math.max(1, Math.min(200, Math.round(next)));
+    setAddSeatsCount(clamped);
+    setAddSeatsDraft(String(clamped));
+  };
 
   if (!portalUser) return null;
 
@@ -247,17 +258,15 @@ export function TeamPage() {
       }
 
       setInviteEmail('');
-      setFeedback({
-        type: 'success',
-        text: targetEmail
-          ? `Invite created and email queued for ${targetEmail}. You can also copy the link below.`
-          : 'Single-use invite link created. Copy and share it with your teammate.',
-      });
+      const msg = targetEmail
+        ? `Invite created and email queued for ${targetEmail}. You can also copy the link below.`
+        : 'Single-use invite link created. Copy and share it with your teammate.';
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to create invite link.'),
-      });
+      const msg = formatPortalError(err, 'Unable to create invite link.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setCreatingInvite(false);
     }
@@ -272,11 +281,11 @@ export function TeamPage() {
         updatedAt: serverTimestamp(),
       });
       setFeedback({ type: 'success', text: 'Invite link revoked.' });
+      toast.success('Invite link revoked.');
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to revoke invite link.'),
-      });
+      const msg = formatPortalError(err, 'Unable to revoke invite link.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -292,12 +301,13 @@ export function TeamPage() {
         memberUid: m.uid,
         actor: portalUser,
       });
-      setFeedback({ type: 'success', text: `${m.displayName} removed from the team.` });
+      const msg = `${m.displayName} removed from the team.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to remove team member.'),
-      });
+      const msg = formatPortalError(err, 'Unable to remove team member.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -325,12 +335,12 @@ export function TeamPage() {
         type: 'success',
         text: 'Top-up invoice created! Redirecting to payment...',
       });
+      toast.success('Top-up invoice created! Opening payment details.');
       navigate(`/invoices/${invoiceId}`);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to create top-up invoice.'),
-      });
+      const msg = formatPortalError(err, 'Unable to create top-up invoice.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setCreatingTopUp(false);
     }
@@ -342,12 +352,12 @@ export function TeamPage() {
     setFeedback(null);
     try {
       await removeTeamMember({ teamId: team.id, memberUid: portalUser.uid, actor: portalUser });
+      toast.info('You left the team.');
       navigate('/profile');
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to leave team.'),
-      });
+      const msg = formatPortalError(err, 'Unable to leave team.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -494,11 +504,13 @@ export function TeamPage() {
                                     type: 'success',
                                     text: 'Invite link copied to clipboard.',
                                   });
+                                  toast.success('Invite link copied to clipboard.');
                                 } catch {
                                   setFeedback({
                                     type: 'error',
                                     text: 'Unable to copy to clipboard.',
                                   });
+                                  toast.error('Unable to copy to clipboard.');
                                 }
                               }}
                               className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] hover:bg-[#E6F4F4]"
@@ -569,18 +581,50 @@ export function TeamPage() {
               Your new total headcount determines your team discount tier (up to 50%), minus what you already paid.
             </p>
             <div>
-              <label htmlFor="add-seats" className="block text-xs font-medium text-[#1F2A2A] mb-1">
+              <label htmlFor="add-seats" className="block text-xs font-medium text-[#1F2A2A] mb-1.5">
                 Extra seats to add
               </label>
-              <input
-                id="add-seats"
-                type="number"
-                min={1}
-                max={200}
-                value={addSeatsCount}
-                onChange={(e) => setAddSeatsCount(Math.max(1, Number(e.target.value) || 1))}
-                className="w-full sm:w-32 min-h-[42px] px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm font-semibold tabular-nums"
-              />
+              <div className="inline-flex items-center rounded-xl border border-[#084F4E]/20 bg-white overflow-hidden">
+                <button
+                  type="button"
+                  aria-label="Decrease extra seats"
+                  onClick={() => updateAddSeats(addSeatsCount - 1)}
+                  disabled={addSeatsCount <= 1}
+                  className="min-h-[42px] min-w-[42px] flex items-center justify-center text-[#084F4E] hover:bg-[#E6F4F4] disabled:opacity-40 transition-colors"
+                >
+                  <Minus className="w-4 h-4" />
+                </button>
+                <input
+                  id="add-seats"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={200}
+                  value={addSeatsDraft}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    setAddSeatsDraft(raw);
+                    const parsed = Number(raw);
+                    if (raw !== '' && !Number.isNaN(parsed) && parsed >= 1 && parsed <= 200) {
+                      setAddSeatsCount(Math.round(parsed));
+                    }
+                  }}
+                  onBlur={() => {
+                    const parsed = Number(addSeatsDraft);
+                    updateAddSeats(Number.isNaN(parsed) ? 1 : parsed);
+                  }}
+                  className="w-16 py-2 text-center border-x border-[#084F4E]/15 text-sm font-semibold tabular-nums focus:outline-none"
+                />
+                <button
+                  type="button"
+                  aria-label="Increase extra seats"
+                  onClick={() => updateAddSeats(addSeatsCount + 1)}
+                  disabled={addSeatsCount >= 200}
+                  className="min-h-[42px] min-w-[42px] flex items-center justify-center text-[#084F4E] hover:bg-[#E6F4F4] disabled:opacity-40 transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             {topUpQuote && (

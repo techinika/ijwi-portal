@@ -28,6 +28,7 @@ import {
 import { createEnrolmentInvoice, dispatchPortalEmail } from '../lib/portalActions';
 import { apiFetch } from '../lib/api';
 import { calculateEnrolmentQuote, type PriceQuote } from '../shared/pricing';
+import { useToast } from './ToastContext';
 import type {
   Announcement,
   NotificationItem,
@@ -80,6 +81,7 @@ interface AuthContextValue {
   signInWithGoogle: () => Promise<PortalUser | null>;
   logout: () => Promise<void>;
   markNotificationRead: (id: string) => Promise<void>;
+  markAllNotificationsRead: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -170,6 +172,7 @@ function formatFirebaseAuthError(err: unknown): string {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const { toast } = useToast();
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [portalUser, setPortalUser] = useState<PortalUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -355,41 +358,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const pending = loadPendingEnrolment();
     if (!pending) return null;
 
-    let verifiedQuote = calculateEnrolmentQuote({
-      unitPriceCents: pending.plan.unitPriceCents,
-      seats: pending.seats,
-      currency: pending.plan.currency,
-    });
-    try {
-      const res = await apiFetch<{ quote: PriceQuote }>('/api/pricing/quote', {
-        method: 'POST',
-        timeoutMs: 8_000,
-        body: JSON.stringify({
-          planId: pending.plan.id,
-          unitPriceCents: pending.plan.unitPriceCents,
-          seats: pending.seats,
-          currency: pending.plan.currency,
-        }),
+    let verifiedQuote = pending.quote;
+    if (!verifiedQuote) {
+      verifiedQuote = calculateEnrolmentQuote({
+        unitPriceCents: pending.plan.unitPriceCents,
+        seats: pending.seats,
+        currency: pending.plan.currency,
       });
-      verifiedQuote = res.quote;
-    } catch {
-      verifiedQuote = pending.quote || verifiedQuote;
+      try {
+        const res = await apiFetch<{ quote: PriceQuote }>('/api/pricing/quote', {
+          method: 'POST',
+          timeoutMs: 6_000,
+          body: JSON.stringify({
+            planId: pending.plan.id,
+            unitPriceCents: pending.plan.unitPriceCents,
+            seats: pending.seats,
+            currency: pending.plan.currency,
+          }),
+        });
+        verifiedQuote = res.quote;
+      } catch {
+        // Fallback to local quote
+      }
     }
 
-    const { invoiceId } = await createEnrolmentInvoice({
-      user: activeProfile,
-      plan: pending.plan,
-      mode: pending.mode,
-      seats: pending.seats,
-      ownerIsLearner: pending.ownerIsLearner,
-      organisation: pending.organisation,
-      couponCode: pending.couponCode,
-      quote: pending.quote || verifiedQuote,
-    });
-    clearPendingEnrolment();
-    const targetPath = `/invoices/${invoiceId}`;
-    setPendingRedirectPath(targetPath);
-    return targetPath;
+    try {
+      const { invoiceId } = await createEnrolmentInvoice({
+        user: activeProfile,
+        plan: pending.plan,
+        mode: pending.mode,
+        seats: pending.seats,
+        ownerIsLearner: pending.ownerIsLearner,
+        organisation: pending.organisation,
+        couponCode: pending.couponCode,
+        quote: verifiedQuote,
+      });
+      clearPendingEnrolment();
+      const targetPath = `/invoices/${invoiceId}`;
+      setPendingRedirectPath(targetPath);
+      toast.success('Invoice created! Opening your payment details.');
+      return targetPath;
+    } catch (err) {
+      const msg = formatPortalError(err, 'Unable to create your enrolment invoice.');
+      toast.error(msg);
+      throw new Error(msg);
+    }
   }
 
   useEffect(() => {
@@ -550,6 +563,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const msg = formatPortalError(err, formatFirebaseAuthError(err));
       setAuthError(msg);
+      toast.error(msg);
       throw new Error(msg);
     }
   }
@@ -557,6 +571,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function logout() {
     setAuthError(null);
     await signOut(auth);
+    toast.info('Signed out of Ijwi Portal.');
   }
 
   async function markNotificationRead(id: string) {
@@ -564,6 +579,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await updateDoc(doc(db, 'portal_notifications', firebaseUser.uid, 'items', id), {
       read: true,
     });
+  }
+
+  async function markAllNotificationsRead() {
+    if (!firebaseUser) return;
+    const unread = notifications.filter((n) => !n.read);
+    if (unread.length === 0) return;
+    await Promise.allSettled(
+      unread.map((n) =>
+        updateDoc(doc(db, 'portal_notifications', firebaseUser.uid, 'items', n.id), {
+          read: true,
+        })
+      )
+    );
   }
 
   return (
@@ -582,6 +610,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         signInWithGoogle,
         logout,
         markNotificationRead,
+        markAllNotificationsRead,
       }}
     >
       {children}

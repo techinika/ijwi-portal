@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import QRCode from 'qrcode';
 import { Award, CheckCircle2, ExternalLink } from 'lucide-react';
 import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import type { LessonProgress, PortalBooking, PortalCertificate } from '../types/portal';
 
@@ -52,46 +53,51 @@ function CertificateCard({ cert }: { cert: PortalCertificate }) {
 
 export function ProgressPage() {
   const { portalUser } = useAuth();
+  const { toast } = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
   const [lessons, setLessons] = useState<LessonProgress[]>([]);
   const [bookings, setBookings] = useState<PortalBooking[]>([]);
   const [sessionsCount, setSessionsCount] = useState(0);
   const [certs, setCerts] = useState<PortalCertificate[]>([]);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
 
+  const portalUid = portalUser?.uid || '';
+
   useEffect(() => {
-    if (!portalUser) return;
+    if (!portalUid) return;
 
     const onErr = (err: unknown) => {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to load progress records.'),
-      });
+      const msg = formatPortalError(err, 'Unable to load progress records.');
+      setFeedback({ type: 'error', text: msg });
+      toastRef.current.error(msg);
     };
 
     const unsubLessons = onSnapshot(
       query(
-        collection(db, 'portal_progress', portalUser.uid, 'lessons'),
-        where('studentId', '==', portalUser.uid)
+        collection(db, 'portal_progress', portalUid, 'lessons'),
+        where('studentId', '==', portalUid)
       ),
       (snap) => setLessons(snap.docs.map((d) => d.data() as LessonProgress)),
       onErr
     );
 
     const unsubBookings = onSnapshot(
-      query(collection(db, 'portal_bookings'), where('studentId', '==', portalUser.uid)),
+      query(collection(db, 'portal_bookings'), where('studentId', '==', portalUid)),
       (snap) =>
         setBookings(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalBooking, 'id'>) }))),
       onErr
     );
 
     const unsubSessions = onSnapshot(
-      query(collection(db, 'portal_sessions'), where('attendeeIds', 'array-contains', portalUser.uid)),
+      query(collection(db, 'portal_sessions'), where('attendeeIds', 'array-contains', portalUid)),
       (snap) => setSessionsCount(snap.size),
       onErr
     );
 
     const unsubCerts = onSnapshot(
-      query(collection(db, 'portal_certificates'), where('userId', '==', portalUser.uid)),
+      query(collection(db, 'portal_certificates'), where('userId', '==', portalUid)),
       (snap) => setCerts(snap.docs.map((d) => d.data() as PortalCertificate)),
       onErr
     );
@@ -102,7 +108,7 @@ export function ProgressPage() {
       unsubSessions();
       unsubCerts();
     };
-  }, [portalUser]);
+  }, [portalUid]);
 
   if (!portalUser) return null;
 

@@ -7,6 +7,7 @@ import { apiFetch } from '../lib/api';
 import { activatePaidInvoice, createEnrolmentInvoice } from '../lib/portalActions';
 import { downloadInvoicePdf } from '../lib/pdfInvoice';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { formatMoney, calculateEnrolmentQuote } from '../shared/pricing';
 import { DEFAULT_PLANS } from '../lib/seed';
 import type { PortalInvoice } from '../types/portal';
@@ -16,10 +17,12 @@ export function InvoicePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { portalUser, loading: authLoading, signInWithGoogle } = useAuth();
+  const { toast } = useToast();
   const [invoice, setInvoice] = useState<PortalInvoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [sandboxOrder, setSandboxOrder] = useState<{
     trackingId: string;
     merchantRef: string;
@@ -58,7 +61,7 @@ export function InvoicePage() {
       }
     );
     return () => unsub();
-  }, [id, portalUser, authLoading]);
+  }, [id, portalUser?.uid, authLoading]);
 
   // Handle return redirect from Pesapal or sandbox checkout URL
   useEffect(() => {
@@ -112,9 +115,12 @@ export function InvoicePage() {
         setSandboxOrder(null);
         setJustPaid(true);
         setSearchParams({});
+        toast.success('Payment confirmed — Murakoze! Your portal is open.');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to verify payment.');
+      const msg = err instanceof Error ? err.message : 'Unable to verify payment.';
+      setError(msg);
+      toast.error(msg);
     } finally {
       setPaying(false);
     }
@@ -156,11 +162,14 @@ export function InvoicePage() {
 
       if (res.mode === 'sandbox_demo') {
         setSandboxOrder({ trackingId: res.trackingId, merchantRef: res.merchantRef });
+        toast.info('Sandbox checkout ready. Select a payment method to confirm.');
       } else {
         window.location.href = res.redirectUrl;
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to start Pesapal payment.');
+      const msg = err instanceof Error ? err.message : 'Unable to start Pesapal payment.';
+      setError(msg);
+      toast.error(msg);
     } finally {
       setPaying(false);
     }
@@ -187,11 +196,27 @@ export function InvoicePage() {
         quote,
         existingTeamId: invoice.teamId,
       });
+      toast.success('Fresh invoice created! Opening payment details.');
       navigate(`/invoices/${invoiceId}`);
     } catch (err) {
-      setError(formatPortalError(err, 'Unable to create a fresh invoice.'));
+      const msg = formatPortalError(err, 'Unable to create a fresh invoice.');
+      setError(msg);
+      toast.error(msg);
     } finally {
       setPaying(false);
+    }
+  }
+
+  async function handleDownloadPdf() {
+    if (!invoice) return;
+    setDownloadingPdf(true);
+    try {
+      await downloadInvoicePdf(invoice);
+      toast.success(`Downloaded ${invoice.number}.pdf`);
+    } catch (err) {
+      toast.error(formatPortalError(err, 'Unable to generate invoice PDF.'));
+    } finally {
+      setDownloadingPdf(false);
     }
   }
 
@@ -281,11 +306,12 @@ export function InvoicePage() {
 
           <button
             type="button"
-            onClick={() => downloadInvoicePdf(invoice)}
-            className="w-full sm:w-auto min-h-[42px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm font-medium text-[#084F4E] hover:bg-[#E6F4F4] transition-colors"
+            disabled={downloadingPdf}
+            onClick={() => void handleDownloadPdf()}
+            className="w-full sm:w-auto min-h-[42px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-sm font-medium text-[#084F4E] hover:bg-[#E6F4F4] transition-colors disabled:opacity-60"
           >
             <Download className="w-4 h-4" />
-            <span>Download PDF</span>
+            <span>{downloadingPdf ? 'Generating PDF...' : 'Download PDF'}</span>
           </button>
         </div>
 

@@ -12,9 +12,10 @@ import {
   where,
   deleteDoc,
 } from 'firebase/firestore';
-import { Upload, CheckCircle2, Trash2, Calendar, Award, BookOpen, Plus } from 'lucide-react';
+import { Upload, CheckCircle2, Trash2, Calendar, Award, BookOpen, Plus, X } from 'lucide-react';
 import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { apiFetch } from '../lib/api';
 import { DEFAULT_WEEKLY_AVAILABILITY } from '../lib/seed';
 import { dispatchPortalEmail, pushNotification } from '../lib/portalActions';
@@ -57,6 +58,9 @@ function createBlankLevels(): LearningLevel[] {
 
 export function TeacherPage() {
   const { portalUser } = useAuth();
+  const { toast } = useToast();
+  const portalUserRef = useRef(portalUser);
+  portalUserRef.current = portalUser;
   const [tab, setTab] = useState<TeacherTab>('today');
   const [allTeachers, setAllTeachers] = useState<TeacherProfile[]>([]);
   const [selectedTeacherUid, setSelectedTeacherUid] = useState<string>('');
@@ -103,7 +107,7 @@ export function TeacherPage() {
 
   // Load dynamic teachers list so admins can view any teacher and teachers see their own record
   useEffect(() => {
-    if (!portalUser) return;
+    if (!portalUser?.uid) return;
     if (portalUser.role === 'teacher') {
       setSelectedTeacherUid(portalUser.uid);
       return;
@@ -120,14 +124,15 @@ export function TeacherPage() {
       }
     );
     return () => unsubT();
-  }, [portalUser]);
+  }, [portalUser?.uid, portalUser?.role]);
 
   const activeTeacherUid =
     portalUser?.role === 'teacher' ? portalUser.uid : selectedTeacherUid;
 
   // Load selected teacher's profile, bookings, students, teams, plans, and resources
   useEffect(() => {
-    if (!portalUser) return;
+    const currentUser = portalUserRef.current;
+    if (!currentUser?.uid) return;
 
     const unsubPlans = onSnapshot(
       collection(db, 'portal_plans'),
@@ -150,7 +155,7 @@ export function TeacherPage() {
     );
 
     const unsubR = onSnapshot(
-      query(collection(db, 'portal_resources'), where('uploaderId', '==', portalUser.uid)),
+      query(collection(db, 'portal_resources'), where('uploaderId', '==', currentUser.uid)),
       (snap) =>
         setResources(
           snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PortalResource, 'id'>) }))
@@ -173,14 +178,15 @@ export function TeacherPage() {
 
     getDoc(doc(db, 'portal_teachers', activeTeacherUid))
       .then(async (snap) => {
+        const latestUser = portalUserRef.current;
         if (snap.exists()) {
           setTeacherProfile(snap.data() as TeacherProfile);
-        } else if (portalUser.role === 'teacher' && activeTeacherUid === portalUser.uid) {
+        } else if (latestUser && latestUser.role === 'teacher' && activeTeacherUid === latestUser.uid) {
           const starter: TeacherProfile = {
-            uid: portalUser.uid,
-            email: portalUser.email,
-            displayName: portalUser.displayName,
-            photoUrl: portalUser.photoUrl || '',
+            uid: latestUser.uid,
+            email: latestUser.email,
+            displayName: latestUser.displayName,
+            photoUrl: latestUser.photoUrl || '',
             bio: 'Kinyarwanda teacher at Ijwi.',
             availability: DEFAULT_WEEKLY_AVAILABILITY,
             daysOff: [],
@@ -189,7 +195,7 @@ export function TeacherPage() {
             maxPerDay: 6,
             active: true,
           };
-          await setDoc(doc(db, 'portal_teachers', portalUser.uid), {
+          await setDoc(doc(db, 'portal_teachers', latestUser.uid), {
             ...starter,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
@@ -232,7 +238,7 @@ export function TeacherPage() {
       unsubB();
       unsubS();
     };
-  }, [portalUser, activeTeacherUid]);
+  }, [portalUser?.uid, portalUser?.role, activeTeacherUid]);
 
   const myCreatedPlans = useMemo(
     () =>
@@ -301,15 +307,13 @@ export function TeacherPage() {
           link: '/progress',
         });
       }
-      setFeedback({
-        type: 'success',
-        text: `Marked lesson with ${b.studentName} as ${status.replace('_', ' ')}.`,
-      });
+      const msg = `Marked lesson with ${b.studentName} as ${status.replace('_', ' ')}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update lesson status.'),
-      });
+      const errMsg = formatPortalError(err, 'Unable to update lesson status.');
+      setFeedback({ type: 'error', text: errMsg });
+      toast.error(errMsg);
     } finally {
       setBusyKey(null);
     }
@@ -330,12 +334,12 @@ export function TeacherPage() {
         { merge: true }
       );
       setFeedback({ type: 'success', text: 'Availability updated.' });
+      toast.success('Availability updated.');
     } catch (err) {
       if (previous) setTeacherProfile(previous);
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to save availability.'),
-      });
+      const errMsg = formatPortalError(err, 'Unable to save availability.');
+      setFeedback({ type: 'error', text: errMsg });
+      toast.error(errMsg);
     } finally {
       setBusyKey(null);
     }
@@ -413,10 +417,12 @@ export function TeacherPage() {
       const successText = `Learning plan "${savedName}" published! You can now apply it to learners or teams.`;
       setPlanFeedback({ type: 'success', text: successText });
       setFeedback({ type: 'success', text: successText });
+      toast.success(successText);
     } catch (err) {
       const errText = formatPortalError(err, 'Unable to save learning plan.');
       setPlanFeedback({ type: 'error', text: errText });
       setFeedback({ type: 'error', text: errText });
+      toast.error(errText);
     } finally {
       setSavingPlan(false);
     }
@@ -430,12 +436,13 @@ export function TeacherPage() {
         active: !pl.active,
         updatedAt: serverTimestamp(),
       });
-      setFeedback({
-        type: 'success',
-        text: pl.active ? `Archived "${pl.name}".` : `Activated "${pl.name}".`,
-      });
+      const msg = pl.active ? `Archived "${pl.name}".` : `Activated "${pl.name}".`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to update plan status.') });
+      const msg = formatPortalError(err, 'Unable to update plan status.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -455,14 +462,15 @@ export function TeacherPage() {
         updatedAt: serverTimestamp(),
       });
       const planLabel = plans.find((p) => p.id === targetPlanId)?.name || targetPlanId;
-      setFeedback({
-        type: 'success',
-        text: next.includes(targetPlanId)
-          ? `Applied "${planLabel}" to ${student.displayName}.`
-          : `Removed "${planLabel}" from ${student.displayName}.`,
-      });
+      const msg = next.includes(targetPlanId)
+        ? `Applied "${planLabel}" to ${student.displayName}.`
+        : `Removed "${planLabel}" from ${student.displayName}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to update student plans.') });
+      const msg = formatPortalError(err, 'Unable to update student plans.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -482,14 +490,15 @@ export function TeacherPage() {
         updatedAt: serverTimestamp(),
       });
       const planLabel = plans.find((p) => p.id === targetPlanId)?.name || targetPlanId;
-      setFeedback({
-        type: 'success',
-        text: next.includes(targetPlanId)
-          ? `Applied "${planLabel}" to team ${team.name}.`
-          : `Removed "${planLabel}" from team ${team.name}.`,
-      });
+      const msg = next.includes(targetPlanId)
+        ? `Applied "${planLabel}" to team ${team.name}.`
+        : `Removed "${planLabel}" from team ${team.name}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to update team plans.') });
+      const msg = formatPortalError(err, 'Unable to update team plans.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -505,6 +514,7 @@ export function TeacherPage() {
       const msg = 'Please enter a valid external URL.';
       setUploadFeedback({ type: 'error', text: msg });
       setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
       return;
     }
 
@@ -513,12 +523,14 @@ export function TeacherPage() {
         const msg = 'Please choose a PDF, MP4, or WebM file.';
         setUploadFeedback({ type: 'error', text: msg });
         setFeedback({ type: 'error', text: msg });
+        toast.error(msg);
         return;
       }
       if (resFile.size > 60 * 1024 * 1024) {
         const msg = 'File size exceeds the 60 MB limit. Please choose a smaller file.';
         setUploadFeedback({ type: 'error', text: msg });
         setFeedback({ type: 'error', text: msg });
+        toast.error(msg);
         return;
       }
     }
@@ -574,10 +586,14 @@ export function TeacherPage() {
       const successText = `Resource "${savedTitle}" published to your study library!`;
       setUploadFeedback({ type: 'success', text: successText });
       setFeedback({ type: 'success', text: successText });
+      toast.success(successText, {
+        action: { label: 'Open Study Library', to: '/resources' },
+      });
     } catch (err) {
       const errText = formatPortalError(err, 'Resource upload failed. Please try again.');
       setUploadFeedback({ type: 'error', text: errText });
       setFeedback({ type: 'error', text: errText });
+      toast.error(errText);
     } finally {
       setUploading(false);
     }
@@ -593,9 +609,13 @@ export function TeacherPage() {
         }).catch(() => {});
       }
       await deleteDoc(doc(db, 'portal_resources', r.id));
-      setFeedback({ type: 'success', text: `Deleted resource "${r.title}".` });
+      const msg = `Deleted resource "${r.title}".`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to delete resource.') });
+      const msg = formatPortalError(err, 'Unable to delete resource.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -632,12 +652,13 @@ export function TeacherPage() {
         ctaLabel: 'View Certificate',
         ctaUrl: `/verify/${certCode}`,
       });
-      setFeedback({
-        type: 'success',
-        text: `Certificate ${certCode} issued to ${stu.displayName}.`,
-      });
+      const msg = `Certificate ${certCode} issued to ${stu.displayName}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({ type: 'error', text: formatPortalError(err, 'Unable to issue certificate.') });
+      const msg = formatPortalError(err, 'Unable to issue certificate.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -1438,7 +1459,7 @@ export function TeacherPage() {
                 className="w-full px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
               />
             ) : (
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -1447,11 +1468,30 @@ export function TeacherPage() {
                     setResFile(e.target.files?.[0] || null);
                     setUploadFeedback(null);
                   }}
-                  className="w-full text-xs"
+                  className="w-full text-xs file:mr-3 file:py-2 file:px-3.5 file:rounded-xl file:border file:border-[#084F4E]/20 file:bg-[#E6F4F4] file:text-xs file:font-semibold file:text-[#084F4E] hover:file:bg-[#084F4E] hover:file:text-white file:transition-colors"
                 />
                 {resFile && (
-                  <p className="text-[11px] text-[#0E7C7B] tabular-nums">
-                    Selected: {resFile.name} ({(resFile.size / (1024 * 1024)).toFixed(2)} MB)
+                  <div className="flex items-center justify-between gap-2 rounded-xl border border-[#084F4E]/15 bg-[#FAFBFB] px-3 py-2 text-xs">
+                    <span className="truncate text-[#084F4E] font-medium tabular-nums">
+                      {resFile.name} ({(resFile.size / (1024 * 1024)).toFixed(2)} MB)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResFile(null);
+                        if (fileInputRef.current) fileInputRef.current.value = '';
+                      }}
+                      aria-label="Remove selected file"
+                      className="inline-flex items-center gap-1 text-red-700 hover:underline shrink-0"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Clear</span>
+                    </button>
+                  </div>
+                )}
+                {resFile && resFile.size > 4 * 1024 * 1024 && (
+                  <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                    Heads up: this file is over 4 MB. On serverless hosting, uploads above ~4 MB may fail; standard Node hosting supports up to 60 MB.
                   </p>
                 )}
               </div>

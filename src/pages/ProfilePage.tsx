@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   collection,
@@ -14,18 +14,37 @@ import {
 import { Download, Trash2 } from 'lucide-react';
 import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { downloadInvoicePdf } from '../lib/pdfInvoice';
 import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import { formatMoney } from '../shared/pricing';
 import type { PortalInvoice, PortalTeam } from '../types/portal';
 
+const COMMON_TIMEZONES = [
+  'Africa/Kigali',
+  'UTC',
+  'Europe/London',
+  'Europe/Brussels',
+  'Europe/Paris',
+  'America/New_York',
+  'America/Chicago',
+  'America/Los_Angeles',
+  'Asia/Dubai',
+];
+
 export function ProfilePage() {
   const { portalUser, logout } = useAuth();
+  const { toast } = useToast();
   const navigate = useNavigate();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
   const [invoices, setInvoices] = useState<PortalInvoice[]>([]);
   const [team, setTeam] = useState<PortalTeam | null>(null);
   const [displayName, setDisplayName] = useState('');
-  const [timezone, setTimezone] = useState('UTC');
+  const [timezone, setTimezone] = useState(
+    Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  );
   const [organisation, setOrganisation] = useState('');
   const [emailPrefs, setEmailPrefs] = useState({
     reminders: true,
@@ -34,27 +53,47 @@ export function ProfilePage() {
     announcements: true,
   });
   const [saving, setSaving] = useState(false);
+  const [downloadingInvId, setDownloadingInvId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  useEffect(() => {
-    if (!portalUser) return;
-    setDisplayName(portalUser.displayName);
-    setTimezone(portalUser.timezone);
-    setOrganisation(portalUser.organisation || '');
-    if (portalUser.emailPrefs) setEmailPrefs(portalUser.emailPrefs);
+  const portalUid = portalUser?.uid || '';
+  const portalTeamId = portalUser?.teamId || '';
+  const portalDisplayName = portalUser?.displayName || '';
+  const portalTimezone = portalUser?.timezone || '';
+  const portalOrg = portalUser?.organisation || '';
+  const emailPrefsKey = portalUser?.emailPrefs ? JSON.stringify(portalUser.emailPrefs) : '';
 
-    if (portalUser.teamId) {
-      getDoc(doc(db, 'portal_teams', portalUser.teamId))
+  useEffect(() => {
+    if (!portalUid) return;
+    setDisplayName(portalDisplayName);
+    if (portalTimezone) setTimezone(portalTimezone);
+    setOrganisation(portalOrg);
+    if (emailPrefsKey) {
+      try {
+        setEmailPrefs(JSON.parse(emailPrefsKey));
+      } catch {
+        // keep current
+      }
+    }
+  }, [portalUid, portalDisplayName, portalTimezone, portalOrg, emailPrefsKey]);
+
+  useEffect(() => {
+    if (!portalUid) return;
+
+    if (portalTeamId) {
+      getDoc(doc(db, 'portal_teams', portalTeamId))
         .then((snap) => {
           if (snap.exists()) setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
         })
         .catch(() => {});
+    } else {
+      setTeam(null);
     }
 
     const unsub = onSnapshot(
-      query(collection(db, 'portal_invoices'), where('payerId', '==', portalUser.uid)),
+      query(collection(db, 'portal_invoices'), where('payerId', '==', portalUid)),
       (snap) => {
         setInvoices(
           snap.docs
@@ -63,14 +102,18 @@ export function ProfilePage() {
         );
       },
       (err) => {
-        setFeedback({
-          type: 'error',
-          text: formatPortalError(err, 'Unable to load your billing history.'),
-        });
+        const msg = formatPortalError(err, 'Unable to load your billing history.');
+        setFeedback({ type: 'error', text: msg });
+        toastRef.current.error(msg);
       }
     );
     return () => unsub();
-  }, [portalUser]);
+  }, [portalUid, portalTeamId]);
+
+  const timezoneOptions = useMemo(() => {
+    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    return Array.from(new Set([timezone, browserTz, ...COMMON_TIMEZONES].filter(Boolean)));
+  }, [timezone]);
 
   if (!portalUser) return null;
 
@@ -92,13 +135,25 @@ export function ProfilePage() {
         updatedAt: serverTimestamp(),
       });
       setFeedback({ type: 'success', text: 'Profile preferences saved.' });
+      toast.success('Profile preferences saved.');
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to save profile preferences.'),
-      });
+      const msg = formatPortalError(err, 'Unable to save profile preferences.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleDownloadPdf(inv: PortalInvoice) {
+    setDownloadingInvId(inv.id);
+    try {
+      await downloadInvoicePdf(inv);
+      toast.success(`Downloaded PDF for ${inv.number}.`);
+    } catch {
+      toast.error('Unable to generate invoice PDF.');
+    } finally {
+      setDownloadingInvId(null);
     }
   }
 
@@ -116,6 +171,7 @@ export function ProfilePage() {
     a.download = `ijwi-data-${portalUser.uid.slice(0, 8)}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    toast.success('Your account data JSON has been downloaded.');
   }
 
   async function handleDeleteAccount() {
@@ -125,12 +181,12 @@ export function ProfilePage() {
     try {
       await deleteDoc(doc(db, 'users', portalUser.uid));
       await logout();
+      toast.info('Your portal profile has been deleted.');
       navigate('/');
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to delete account.'),
-      });
+      const msg = formatPortalError(err, 'Unable to delete account.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
       setDeleting(false);
     }
   }
@@ -183,12 +239,18 @@ export function ProfilePage() {
             <label htmlFor="prof-tz" className="block text-xs font-medium text-[#1F2A2A] mb-1">
               Time zone
             </label>
-            <input
+            <select
               id="prof-tz"
               value={timezone}
               onChange={(e) => setTimezone(e.target.value)}
-              className="w-full min-h-[42px] px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
-            />
+              className="w-full min-h-[42px] px-3.5 py-2 rounded-xl border border-[#084F4E]/20 bg-white text-sm text-[#084F4E]"
+            >
+              {timezoneOptions.map((tz) => (
+                <option key={tz} value={tz}>
+                  {tz}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -229,7 +291,7 @@ export function ProfilePage() {
         <button
           type="submit"
           disabled={saving}
-          className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B]"
+          className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-xl bg-[#084F4E] text-white text-sm font-semibold hover:bg-[#0E7C7B] disabled:opacity-50"
         >
           {saving ? 'Saving...' : 'Save profile'}
         </button>
@@ -272,11 +334,12 @@ export function ProfilePage() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => downloadInvoicePdf(inv)}
-                    className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] hover:bg-[#E6F4F4]"
+                    disabled={downloadingInvId === inv.id}
+                    onClick={() => void handleDownloadPdf(inv)}
+                    className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#084F4E]/20 text-xs font-medium text-[#084F4E] hover:bg-[#E6F4F4] disabled:opacity-50"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>PDF</span>
+                    <span>{downloadingInvId === inv.id ? '...' : 'PDF'}</span>
                   </button>
                   <Link
                     to={`/invoices/${inv.id}`}

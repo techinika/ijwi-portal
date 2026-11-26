@@ -10,6 +10,7 @@ import {
 import { Users, CheckCircle2, AlertCircle } from 'lucide-react';
 import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import {
   dispatchPortalEmail,
   hashInviteToken,
@@ -21,6 +22,7 @@ import type { PortalInvite, PortalTeam } from '../types/portal';
 export function InviteAcceptPage() {
   const { token } = useParams<{ token: string }>();
   const { portalUser, signInWithGoogle } = useAuth();
+  const { toast } = useToast();
   const navigate = useNavigate();
   const redirectTimerRef = useRef<number | null>(null);
 
@@ -90,7 +92,9 @@ export function InviteAcceptPage() {
       const teamRef = doc(db, 'portal_teams', invite.teamId);
       const teamSnap = await getDoc(teamRef);
       if (!teamSnap.exists()) {
-        setError('The invited team no longer exists.');
+        const msg = 'The invited team no longer exists.';
+        setError(msg);
+        toast.error(msg);
         setJoining(false);
         return;
       }
@@ -98,7 +102,9 @@ export function InviteAcceptPage() {
       setTeam(teamData);
 
       if (teamData.seatsUsed >= teamData.seatsTotal) {
-        setError('All seats in this team are currently filled. Ask the owner to add more seats.');
+        const msg = 'All seats in this team are currently filled. Ask the owner to add more seats.';
+        setError(msg);
+        toast.error(msg);
         setJoining(false);
         return;
       }
@@ -168,11 +174,14 @@ export function InviteAcceptPage() {
       ]);
 
       setJoinedSuccess(true);
+      toast.success(`Muraho! Welcome to ${teamData.name}.`);
       redirectTimerRef.current = window.setTimeout(() => {
         navigate(teamData.accessActive ? '/dashboard' : '/profile');
       }, 1500);
     } catch (err) {
-      setError(formatPortalError(err, 'Could not accept invite.'));
+      const msg = formatPortalError(err, 'Could not accept invite.');
+      setError(msg);
+      toast.error(msg);
     } finally {
       setJoining(false);
     }

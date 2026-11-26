@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { doc, getDoc } from 'firebase/firestore';
-import { Check, ArrowRight, Users, User } from 'lucide-react';
+import { Check, ArrowRight, Users, User, Minus, Plus } from 'lucide-react';
 import { db, formatPortalError } from '../lib/firebase';
 import { fetchPublicPlans } from '../lib/seed';
 import { apiFetch } from '../lib/api';
 import { createEnrolmentInvoice } from '../lib/portalActions';
 import { savePendingEnrolment, useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import {
   calculateEnrolmentQuote,
@@ -19,6 +20,7 @@ import type { PortalCoupon, PortalPlan } from '../types/portal';
 
 export function HomePage() {
   const { portalUser, firebaseUser, signInWithGoogle } = useAuth();
+  const { toast } = useToast();
   const navigate = useNavigate();
 
   const { data: plans = [], isLoading: plansLoading } = useQuery({
@@ -29,6 +31,8 @@ export function HomePage() {
   const [selectedPlanId, setSelectedPlanId] = useState<string>('');
   const [mode, setMode] = useState<'individual' | 'team'>('individual');
   const [seats, setSeats] = useState<number>(4);
+  const [seatsDraft, setSeatsDraft] = useState<string>('4');
+  const [heroImgError, setHeroImgError] = useState(false);
   const [ownerIsLearner, setOwnerIsLearner] = useState<boolean>(true);
   const [organisation, setOrganisation] = useState<string>('');
   const [couponInput, setCouponInput] = useState<string>('');
@@ -75,29 +79,31 @@ export function HomePage() {
     if (!selectedPlan) return;
     let cancelled = false;
     const currentKey = `${selectedPlan.id}:${selectedPlan.unitPriceCents}:${effectiveSeats}:${appliedCoupon?.code || ''}`;
-
-    apiFetch<{ quote: PriceQuote; couponError?: string }>('/api/pricing/quote', {
-      method: 'POST',
-      body: JSON.stringify({
-        planId: selectedPlan.id,
-        unitPriceCents: selectedPlan.unitPriceCents,
-        seats: effectiveSeats,
-        currency: selectedPlan.currency,
-        coupon: appliedCoupon,
-      }),
-    })
-      .then((res) => {
-        if (!cancelled) {
-          setServerQuoteState({ key: currentKey, quote: res.quote });
-          if (res.couponError) setCouponMessage(res.couponError);
-        }
+    const timer = window.setTimeout(() => {
+      apiFetch<{ quote: PriceQuote; couponError?: string }>('/api/pricing/quote', {
+        method: 'POST',
+        body: JSON.stringify({
+          planId: selectedPlan.id,
+          unitPriceCents: selectedPlan.unitPriceCents,
+          seats: effectiveSeats,
+          currency: selectedPlan.currency,
+          coupon: appliedCoupon,
+        }),
       })
-      .catch(() => {
-        // Local calculation remains rendered cleanly if API server is unreachable
-      });
+        .then((res) => {
+          if (!cancelled) {
+            setServerQuoteState({ key: currentKey, quote: res.quote });
+            if (res.couponError) setCouponMessage(res.couponError);
+          }
+        })
+        .catch(() => {
+          // Local calculation remains rendered cleanly if API server is unreachable
+        });
+    }, 250);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [selectedPlan, effectiveSeats, appliedCoupon]);
 
@@ -128,13 +134,19 @@ export function HomePage() {
         perPersonLimit: data.perPersonLimit,
         planId: data.planId,
       });
-      setCouponMessage(
-        data.active
-          ? `Coupon ${data.code} applied (${data.type === 'percent' ? `${data.value}% off` : formatMoney(data.value)}).`
-          : 'This coupon is inactive.'
-      );
+      const msg = data.active
+        ? `Coupon ${data.code} applied (${data.type === 'percent' ? `${data.value}% off` : formatMoney(data.value)}).`
+        : 'This coupon is inactive.';
+      setCouponMessage(msg);
+      if (data.active) {
+        toast.success(msg);
+      } else {
+        toast.info(msg);
+      }
     } catch {
-      setCouponMessage('Sign in first or check the code spelling.');
+      const msg = 'Sign in first or check the code spelling.';
+      setCouponMessage(msg);
+      toast.info(msg);
     }
   }
 
@@ -195,19 +207,60 @@ export function HomePage() {
         type: 'success',
         text: 'Invoice created! Redirecting to payment...',
       });
+      toast.success('Invoice created! Opening payment details.');
       navigate(`/invoices/${invoiceId}`);
     } catch (err) {
+      const errMsg = formatPortalError(err, 'Unable to start enrolment. Please try again.');
       setFeedback({
         type: 'error',
-        text: formatPortalError(err, 'Unable to start enrolment. Please try again.'),
+        text: errMsg,
       });
+      toast.error(errMsg);
     } finally {
       setSubmitting(false);
     }
   }
 
+  const workspacePath =
+    portalUser?.role === 'admin'
+      ? '/admin'
+      : portalUser?.role === 'teacher'
+        ? '/teacher'
+        : portalUser?.accessActive
+          ? '/dashboard'
+          : null;
+
+  const updateSeats = (next: number) => {
+    const clamped = Math.max(2, Math.min(500, Math.round(next)));
+    setSeats(clamped);
+    setSeatsDraft(String(clamped));
+  };
+
   return (
     <div className="bg-white">
+      {workspacePath && portalUser && (
+        <div className="border-b border-[#084F4E]/10 bg-[#E6F4F4]/60">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs sm:text-sm">
+            <span className="text-[#084F4E]">
+              Signed in as <strong>{portalUser.displayName}</strong>
+            </span>
+            <Link
+              to={workspacePath}
+              className="inline-flex items-center gap-1.5 font-semibold text-[#084F4E] hover:text-[#0E7C7B]"
+            >
+              <span>
+                {portalUser.role === 'admin'
+                  ? 'Go to Admin Console'
+                  : portalUser.role === 'teacher'
+                    ? 'Go to Teacher Desk'
+                    : 'Open My Dashboard'}
+              </span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        </div>
+      )}
+
       {/* Hero section — mobile-first stack into 2-column balanced split */}
       <section className="max-w-6xl mx-auto px-4 sm:px-6 pt-6 pb-8 sm:pt-14 sm:pb-16">
         <div className="grid lg:grid-cols-12 gap-6 lg:gap-12 items-stretch">
@@ -236,20 +289,28 @@ export function HomePage() {
           </div>
 
           <div className="lg:col-span-5">
-            <div className="h-full min-h-[210px] sm:min-h-[260px] rounded-[24px] overflow-hidden border border-[#084F4E]/10 bg-[#E6F4F4]">
-              <img
-                src="/src/assets/images/hero_kinyarwanda_study_1795519553630.jpg"
-                alt="Sunlit study desk overlooking green Rwandan hills with Kinyarwanda notes"
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover"
-              />
+            <div className="h-full min-h-[210px] sm:min-h-[260px] rounded-[24px] overflow-hidden border border-[#084F4E]/10 bg-[#E6F4F4] flex items-center justify-center">
+              {!heroImgError ? (
+                <img
+                  src="/src/assets/images/hero_kinyarwanda_study_1795519553630.jpg"
+                  alt="Sunlit study desk overlooking green Rwandan hills with Kinyarwanda notes"
+                  referrerPolicy="no-referrer"
+                  onError={() => setHeroImgError(true)}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="p-6 text-center space-y-1">
+                  <p className="font-display text-xl font-semibold text-[#084F4E]">Muraho! Karibu ku Ijwi</p>
+                  <p className="text-xs text-[#3F4F4F]">Guided 1-on-1 &amp; group Kinyarwanda sessions</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
       </section>
 
       {/* Enrolment Flow */}
-      <section id="enrol" className="border-t border-[#084F4E]/10 bg-[#FAFBFB] py-10 pb-28 sm:py-16 lg:pb-16">
+      <section id="enrol" className="border-t border-[#084F4E]/10 bg-[#FAFBFB] py-10 sm:py-16">
         <div className="max-w-6xl mx-auto px-4 sm:px-6">
           <div className="grid lg:grid-cols-12 gap-8 items-start">
             {/* Left 7 columns: Steps 1 to 3 */}
@@ -374,24 +435,54 @@ export function HomePage() {
                         Number of people to enrol
                       </label>
                       <div className="flex flex-wrap items-center gap-3">
-                        <input
-                          id="team-seats"
-                          type="number"
-                          min={2}
-                          max={500}
-                          value={seats}
-                          onChange={(e) =>
-                            setSeats(Math.max(2, Math.min(500, Number(e.target.value) || 2)))
-                          }
-                          className="w-32 px-4 py-2.5 rounded-xl border border-[#084F4E]/20 text-base font-semibold tabular-nums text-[#084F4E]"
-                        />
+                        <div className="inline-flex items-center rounded-xl border border-[#084F4E]/20 bg-white overflow-hidden">
+                          <button
+                            type="button"
+                            aria-label="Decrease seats"
+                            onClick={() => updateSeats(seats - 1)}
+                            disabled={seats <= 2}
+                            className="min-h-[42px] min-w-[42px] flex items-center justify-center text-[#084F4E] hover:bg-[#E6F4F4] disabled:opacity-40 transition-colors"
+                          >
+                            <Minus className="w-4 h-4" />
+                          </button>
+                          <input
+                            id="team-seats"
+                            type="number"
+                            inputMode="numeric"
+                            min={2}
+                            max={500}
+                            value={seatsDraft}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setSeatsDraft(raw);
+                              const parsed = Number(raw);
+                              if (raw !== '' && !Number.isNaN(parsed) && parsed >= 2 && parsed <= 500) {
+                                setSeats(Math.round(parsed));
+                              }
+                            }}
+                            onBlur={() => {
+                              const parsed = Number(seatsDraft);
+                              updateSeats(Number.isNaN(parsed) ? 2 : parsed);
+                            }}
+                            className="w-16 py-2 text-center border-x border-[#084F4E]/15 text-base font-semibold tabular-nums text-[#084F4E] focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            aria-label="Increase seats"
+                            onClick={() => updateSeats(seats + 1)}
+                            disabled={seats >= 500}
+                            className="min-h-[42px] min-w-[42px] flex items-center justify-center text-[#084F4E] hover:bg-[#E6F4F4] disabled:opacity-40 transition-colors"
+                          >
+                            <Plus className="w-4 h-4" />
+                          </button>
+                        </div>
                         <div className="flex items-center gap-2 text-xs text-[#3F4F4F]">
                           {[4, 8, 20].map((preset) => (
                             <button
                               key={preset}
                               type="button"
-                              onClick={() => setSeats(preset)}
-                              className={`px-3 py-1.5 rounded-lg border text-xs font-medium tabular-nums transition-colors ${
+                              onClick={() => updateSeats(preset)}
+                              className={`min-h-[38px] px-3 py-1.5 rounded-lg border text-xs font-medium tabular-nums transition-colors ${
                                 seats === preset
                                   ? 'border-[#084F4E] bg-[#084F4E] text-white'
                                   : 'border-[#084F4E]/15 text-[#3F4F4F] hover:bg-[#E6F4F4]'

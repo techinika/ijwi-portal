@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   collection,
   doc,
@@ -12,33 +13,46 @@ import {
 import { FileText, Video, ExternalLink, Search } from 'lucide-react';
 import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { fetchAllActivePlans } from '../lib/seed';
 import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import { ProtectedPdfViewer } from '../components/ProtectedPdfViewer';
 import { ProtectedVideoPlayer } from '../components/ProtectedVideoPlayer';
-import type { PortalPlan, PortalResource, PortalTeam } from '../types/portal';
+import type { PortalResource, PortalTeam } from '../types/portal';
 
 export function ResourcesPage() {
   const { portalUser } = useAuth();
+  const { toast } = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
+  const { data: plans = [] } = useQuery({
+    queryKey: ['all_active_plans'],
+    queryFn: fetchAllActivePlans,
+  });
+
   const viewerRef = useRef<HTMLDivElement>(null);
   const [publicResources, setPublicResources] = useState<PortalResource[]>([]);
   const [planResources, setPlanResources] = useState<PortalResource[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
-  const [plans, setPlans] = useState<PortalPlan[]>([]);
   const [team, setTeam] = useState<PortalTeam | null>(null);
   const [search, setSearch] = useState('');
   const [levelFilter, setLevelFilter] = useState('all');
   const [planFilter, setPlanFilter] = useState('all');
   const [selected, setSelected] = useState<PortalResource | null>(null);
 
-  useEffect(() => {
-    if (!portalUser) return;
-    setLoading(true);
-    void fetchAllActivePlans().then(setPlans);
+  const portalUid = portalUser?.uid || '';
+  const portalRole = portalUser?.role || 'student';
+  const portalTeamId = portalUser?.teamId || '';
+  const userAssignedKey = (portalUser?.assignedPlanIds || []).join('|');
 
-    if (portalUser.teamId) {
-      getDoc(doc(db, 'portal_teams', portalUser.teamId))
+  useEffect(() => {
+    if (!portalUid) return;
+    setLoading(true);
+
+    if (portalTeamId) {
+      getDoc(doc(db, 'portal_teams', portalTeamId))
         .then((snap) => {
           if (snap.exists()) setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
         })
@@ -48,14 +62,13 @@ export function ResourcesPage() {
     }
 
     const onErr = (err: unknown) => {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to load study resources.'),
-      });
+      const msg = formatPortalError(err, 'Unable to load study resources.');
+      setFeedback({ type: 'error', text: msg });
+      toastRef.current.error(msg);
       setLoading(false);
     };
 
-    if (portalUser.role === 'teacher' || portalUser.role === 'admin') {
+    if (portalRole === 'teacher' || portalRole === 'admin') {
       const unsubAll = onSnapshot(
         collection(db, 'portal_resources'),
         (snap) => {
@@ -80,30 +93,36 @@ export function ResourcesPage() {
       onErr
     );
     return () => unsubPublic();
-  }, [portalUser]);
+  }, [portalUid, portalRole, portalTeamId]);
+
+  const teamAssignedKey = (team?.assignedPlanIds || []).join('|');
+  const teamPlanFallback = team?.planId || '';
 
   const appliedPlanIds = useMemo(() => {
     const ids = new Set<string>();
-    (portalUser?.assignedPlanIds || []).forEach((id) => ids.add(id));
-    (team?.assignedPlanIds || []).forEach((id) => ids.add(id));
-    if (team?.planId) ids.add(team.planId);
+    if (userAssignedKey) userAssignedKey.split('|').forEach((id) => ids.add(id));
+    if (teamAssignedKey) teamAssignedKey.split('|').forEach((id) => ids.add(id));
+    if (teamPlanFallback) ids.add(teamPlanFallback);
     return Array.from(ids);
-  }, [portalUser, team]);
+  }, [userAssignedKey, teamAssignedKey, teamPlanFallback]);
+
+  const appliedPlanIdsKey = appliedPlanIds.join('|');
 
   useEffect(() => {
     if (
-      !portalUser ||
-      portalUser.role === 'teacher' ||
-      portalUser.role === 'admin' ||
-      appliedPlanIds.length === 0
+      !portalUid ||
+      portalRole === 'teacher' ||
+      portalRole === 'admin' ||
+      !appliedPlanIdsKey
     ) {
       setPlanResources([]);
       return;
     }
+    const targetIds = appliedPlanIdsKey.split('|').slice(0, 10);
     const unsubPlan = onSnapshot(
       query(
         collection(db, 'portal_resources'),
-        where('planIds', 'array-contains-any', appliedPlanIds.slice(0, 10))
+        where('planIds', 'array-contains-any', targetIds)
       ),
       (snap) => {
         setPlanResources(
@@ -111,14 +130,13 @@ export function ResourcesPage() {
         );
       },
       (err) => {
-        setFeedback({
-          type: 'error',
-          text: formatPortalError(err, 'Unable to load plan resources.'),
-        });
+        const msg = formatPortalError(err, 'Unable to load plan resources.');
+        setFeedback({ type: 'error', text: msg });
+        toastRef.current.error(msg);
       }
     );
     return () => unsubPlan();
-  }, [portalUser, appliedPlanIds]);
+  }, [portalUid, portalRole, appliedPlanIdsKey]);
 
   const resources = useMemo(() => {
     const map = new Map<string, PortalResource>();

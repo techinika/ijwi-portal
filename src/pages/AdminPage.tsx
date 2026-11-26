@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   collection,
@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { apiFetch } from '../lib/api';
 import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import {
@@ -65,6 +66,9 @@ type AdminTab =
 
 export function AdminPage() {
   const { portalUser, loading: authLoading, signInWithGoogle } = useAuth();
+  const { toast } = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
   const [tab, setTab] = useState<AdminTab>('overview');
 
   const [users, setUsers] = useState<PortalUser[]>([]);
@@ -139,14 +143,16 @@ export function AdminPage() {
   const [annTitle, setAnnTitle] = useState('');
   const [annBody, setAnnBody] = useState('');
 
+  const portalUid = portalUser?.uid || '';
+  const portalRole = portalUser?.role || '';
+
   useEffect(() => {
-    if (!portalUser || portalUser.role !== 'admin') return;
+    if (!portalUid || portalRole !== 'admin') return;
 
     const onErr = (err: unknown) => {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to load some admin records.'),
-      });
+      const msg = formatPortalError(err, 'Unable to load some admin records.');
+      setFeedback({ type: 'error', text: msg });
+      toastRef.current.error(msg);
     };
 
     const unsubs = [
@@ -246,7 +252,7 @@ export function AdminPage() {
     ];
 
     return () => unsubs.forEach((u) => u());
-  }, [portalUser]);
+  }, [portalUid, portalRole]);
 
   const activeTeachers = useMemo(() => teachers.filter((t) => t.active), [teachers]);
   const activePlans = useMemo(() => plans.filter((p) => p.active), [plans]);
@@ -364,10 +370,9 @@ export function AdminPage() {
   async function changeUserRole(targetUser: PortalUser, nextRole: UserRole) {
     if (!portalUser) return;
     if (targetUser.uid === portalUser.uid && nextRole !== 'admin') {
-      setFeedback({
-        type: 'error',
-        text: 'You cannot remove your own administrator role while signed in.',
-      });
+      const msg = 'You cannot remove your own administrator role while signed in.';
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
       return;
     }
 
@@ -411,15 +416,13 @@ export function AdminPage() {
         targetId: targetUser.uid,
         summary: `Changed ${targetUser.email} role to ${nextRole}`,
       });
-      setFeedback({
-        type: 'success',
-        text: `Updated ${targetUser.displayName}'s role to ${nextRole}.`,
-      });
+      const msg = `Updated ${targetUser.displayName}'s role to ${nextRole}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update user role.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update user role.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -486,10 +489,9 @@ export function AdminPage() {
             summary: `Configured teacher ${cleanName} (${cleanEmail}) with role ${assignedRole}`,
           }),
         ]);
-        setFeedback({
-          type: 'success',
-          text: `${cleanName} is now an active teacher${tGrantAdmin ? ' with Admin role' : ''} and can open the Teacher Desk immediately.`,
-        });
+        const msg = `${cleanName} is now an active teacher${tGrantAdmin ? ' with Admin role' : ''} and can open the Teacher Desk immediately.`;
+        setFeedback({ type: 'success', text: msg });
+        toast.success(msg);
       } else {
         const inviteId = teacherInviteDocId(cleanEmail);
         const placeholderUid = `tch-${inviteId.slice(0, 28)}-${Date.now().toString(36)}`;
@@ -546,10 +548,9 @@ export function AdminPage() {
             summary: `Created teacher profile & invite for ${cleanName} (${cleanEmail})`,
           }),
         ]);
-        setFeedback({
-          type: 'success',
-          text: `Teacher profile created for ${cleanName}. When they sign in with Google (${cleanEmail}), they will automatically enter the Teacher Desk.`,
-        });
+        const msg = `Teacher profile created for ${cleanName}. When they sign in with Google (${cleanEmail}), they will automatically enter the Teacher Desk.`;
+        setFeedback({ type: 'success', text: msg });
+        toast.success(`Teacher profile & invite created for ${cleanName}.`);
       }
 
       setTName('');
@@ -558,10 +559,9 @@ export function AdminPage() {
       setTPhotoUrl('');
       setTGrantAdmin(false);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to create teacher.'),
-      });
+      const msg = formatPortalError(err, 'Unable to create teacher.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setCreatingTeacher(false);
     }
@@ -600,15 +600,13 @@ export function AdminPage() {
         summary: `Updated profile details for teacher ${editTName.trim()}`,
       });
       setEditingTeacherId(null);
-      setFeedback({
-        type: 'success',
-        text: `Updated teacher profile for ${editTName.trim()}.`,
-      });
+      const msg = `Updated teacher profile for ${editTName.trim()}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update teacher profile.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update teacher profile.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -622,15 +620,13 @@ export function AdminPage() {
         active: !t.active,
         updatedAt: serverTimestamp(),
       });
-      setFeedback({
-        type: 'success',
-        text: `${t.displayName} is now ${!t.active ? 'active' : 'paused'}.`,
-      });
+      const msg = `${t.displayName} is now ${!t.active ? 'active' : 'paused'}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update teacher status.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update teacher status.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -645,11 +641,11 @@ export function AdminPage() {
         updatedAt: serverTimestamp(),
       });
       setFeedback({ type: 'success', text: 'Teacher invitation revoked.' });
+      toast.info('Teacher invitation revoked.');
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to revoke teacher invitation.'),
-      });
+      const msg = formatPortalError(err, 'Unable to revoke teacher invitation.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -669,15 +665,13 @@ export function AdminPage() {
         targetId: t.uid,
         summary: `Removed teacher profile ${t.displayName}`,
       });
-      setFeedback({
-        type: 'success',
-        text: `Removed teacher profile for ${t.displayName}.`,
-      });
+      const msg = `Removed teacher profile for ${t.displayName}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.info(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to remove teacher profile.'),
-      });
+      const msg = formatPortalError(err, 'Unable to remove teacher profile.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -699,15 +693,13 @@ export function AdminPage() {
         targetId: user.uid,
         summary: `Assigned teacher ${teacherId || 'none'} to ${user.email}`,
       });
-      setFeedback({
-        type: 'success',
-        text: `Updated teacher assignment for ${user.displayName}.`,
-      });
+      const msg = `Updated teacher assignment for ${user.displayName}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to assign teacher.'),
-      });
+      const msg = formatPortalError(err, 'Unable to assign teacher.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -730,15 +722,13 @@ export function AdminPage() {
         targetId: user.uid,
         summary: `Set ${user.email} status to ${nextStatus}`,
       });
-      setFeedback({
-        type: 'success',
-        text: `${user.displayName} is now ${nextStatus}.`,
-      });
+      const msg = `${user.displayName} is now ${nextStatus}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.info(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update account status.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update account status.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -764,15 +754,13 @@ export function AdminPage() {
         targetId: user.uid,
         summary: `Updated learning plans for ${user.email} (${next.join(', ') || 'none'})`,
       });
-      setFeedback({
-        type: 'success',
-        text: `Updated applied plans for ${user.displayName}.`,
-      });
+      const msg = `Updated applied plans for ${user.displayName}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update learner plans.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update learner plans.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -798,15 +786,13 @@ export function AdminPage() {
         targetId: team.id,
         summary: `Updated learning plans for team ${team.name} (${next.join(', ') || 'none'})`,
       });
-      setFeedback({
-        type: 'success',
-        text: `Updated learning plans for ${team.name}.`,
-      });
+      const msg = `Updated learning plans for ${team.name}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update team plans.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update team plans.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -862,15 +848,13 @@ export function AdminPage() {
           summary: `Generated and emailed new payment link for ${inv.number}`,
         }),
       ]);
-      setFeedback({
-        type: 'success',
-        text: `New payment link generated and emailed to ${inv.payerEmail}.`,
-      });
+      const msg = `New payment link generated and emailed to ${inv.payerEmail}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to generate a new payment link.'),
-      });
+      const msg = formatPortalError(err, 'Unable to generate a new payment link.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -884,12 +868,13 @@ export function AdminPage() {
         status: 'void',
         updatedAt: serverTimestamp(),
       });
-      setFeedback({ type: 'success', text: `Invoice ${inv.number} marked void.` });
+      const msg = `Invoice ${inv.number} marked void.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.info(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to void invoice.'),
-      });
+      const msg = formatPortalError(err, 'Unable to void invoice.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -914,7 +899,9 @@ export function AdminPage() {
           manualReason: reason,
         });
         setInvoiceAction(null);
-        setFeedback({ type: 'success', text: `Invoice ${inv.number} marked paid manually.` });
+        const msg = `Invoice ${inv.number} marked paid manually.`;
+        setFeedback({ type: 'success', text: msg });
+        toast.success(msg);
       } else {
         await updateDoc(doc(db, 'portal_invoices', inv.id), {
           status: 'refunded',
@@ -934,13 +921,14 @@ export function AdminPage() {
           summary: `Refunded ${inv.number}: ${reason}`,
         });
         setInvoiceAction(null);
-        setFeedback({ type: 'success', text: `Invoice ${inv.number} refunded and access revoked.` });
+        const msg = `Invoice ${inv.number} refunded and access revoked.`;
+        setFeedback({ type: 'success', text: msg });
+        toast.info(msg);
       }
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update invoice.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update invoice.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -968,6 +956,7 @@ export function AdminPage() {
     a.download = `ijwi-invoices-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+    toast.success(`Exported ${filteredInvoices.length} invoices to CSV.`);
   }
 
   async function handleCreateCoupon(e: React.FormEvent) {
@@ -997,12 +986,13 @@ export function AdminPage() {
         summary: `Created coupon ${code} (${cValue}${cType === 'percent' ? '%' : ' USD'})`,
       });
       setCCode('');
-      setFeedback({ type: 'success', text: `Coupon ${code} created.` });
+      const msg = `Coupon ${code} created.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to create coupon.'),
-      });
+      const msg = formatPortalError(err, 'Unable to create coupon.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -1016,15 +1006,13 @@ export function AdminPage() {
         active: !c.active,
         updatedAt: serverTimestamp(),
       });
-      setFeedback({
-        type: 'success',
-        text: `Coupon ${c.code} ${!c.active ? 'activated' : 'paused'}.`,
-      });
+      const msg = `Coupon ${c.code} ${!c.active ? 'activated' : 'paused'}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.info(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update coupon status.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update coupon status.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -1064,12 +1052,13 @@ export function AdminPage() {
       setPName('');
       setPObjective('');
       setPDesc('');
-      setFeedback({ type: 'success', text: `Plan "${createdName}" added.` });
+      const msg = `Plan "${createdName}" added.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to create learning plan.'),
-      });
+      const msg = formatPortalError(err, 'Unable to create learning plan.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -1083,15 +1072,13 @@ export function AdminPage() {
         active: !pl.active,
         updatedAt: serverTimestamp(),
       });
-      setFeedback({
-        type: 'success',
-        text: `Plan "${pl.name}" ${!pl.active ? 'activated' : 'archived'}.`,
-      });
+      const msg = `Plan "${pl.name}" ${!pl.active ? 'activated' : 'archived'}.`;
+      setFeedback({ type: 'success', text: msg });
+      toast.info(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update plan status.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update plan status.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -1123,12 +1110,13 @@ export function AdminPage() {
       });
       setAnnTitle('');
       setAnnBody('');
-      setFeedback({ type: 'success', text: 'Announcement published across the portal.' });
+      const msg = 'Announcement published across the portal.';
+      setFeedback({ type: 'success', text: msg });
+      toast.success(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to publish announcement.'),
-      });
+      const msg = formatPortalError(err, 'Unable to publish announcement.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -1213,8 +1201,10 @@ export function AdminPage() {
                 try {
                   await navigator.clipboard.writeText(weeklyFlierText);
                   setFeedback({ type: 'success', text: 'Weekly milestone flier text copied.' });
+                  toast.success('Weekly milestone flier text copied.');
                 } catch {
                   setFeedback({ type: 'error', text: 'Unable to copy to clipboard.' });
+                  toast.error('Unable to copy to clipboard.');
                 }
               }}
               className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-[#084F4E]/20 bg-white text-xs font-semibold text-[#084F4E]"
@@ -1741,8 +1731,26 @@ export function AdminPage() {
             </div>
           </div>
 
-          {/* Mobile-first Cards (< lg) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 lg:hidden">
+          {filteredUsers.length === 0 ? (
+            <div className="rounded-[20px] border border-[#084F4E]/12 bg-[#FAFBFB] p-8 text-center space-y-3">
+              <p className="text-sm text-[#3F4F4F]">No people match your current search or role filter.</p>
+              {(peopleSearch || peopleRoleFilter !== 'all') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPeopleSearch('');
+                    setPeopleRoleFilter('all');
+                  }}
+                  className="px-4 py-2 rounded-xl border border-[#084F4E]/20 bg-white text-xs font-semibold text-[#084F4E] hover:bg-[#E6F4F4]"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* Mobile-first Cards (< lg) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 lg:hidden">
             {filteredUsers.map((u) => (
               <div
                 key={u.uid}
@@ -1949,6 +1957,8 @@ export function AdminPage() {
               </tbody>
             </table>
           </div>
+            </>
+          )}
         </section>
       )}
 
@@ -1987,6 +1997,23 @@ export function AdminPage() {
           </div>
 
           <div className="space-y-3">
+            {filteredInvoices.length === 0 && (
+              <div className="rounded-2xl border border-[#084F4E]/12 bg-[#FAFBFB] p-8 text-center space-y-3">
+                <p className="text-sm text-[#3F4F4F]">No invoices match your search or status filter.</p>
+                {(invoiceSearch || invoiceStatusFilter !== 'all') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInvoiceSearch('');
+                      setInvoiceStatusFilter('all');
+                    }}
+                    className="px-4 py-2 rounded-xl border border-[#084F4E]/20 bg-white text-xs font-semibold text-[#084F4E] hover:bg-[#E6F4F4]"
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+            )}
             {filteredInvoices.map((inv) => {
               const actingHere = invoiceAction?.id === inv.id;
               return (

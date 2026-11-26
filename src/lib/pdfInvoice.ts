@@ -1,8 +1,8 @@
-import { jsPDF } from 'jspdf';
 import type { PortalInvoice } from '../types/portal';
 import { formatMoney } from '../shared/pricing';
 
-export function downloadInvoicePdf(invoice: PortalInvoice): void {
+export async function downloadInvoicePdf(invoice: PortalInvoice): Promise<void> {
+  const { jsPDF } = await import('jspdf');
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
   const isPaid = invoice.status === 'paid';
 

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import {
   collection,
   doc,
@@ -14,18 +15,33 @@ import {
 import { Users, Plus, Calendar } from 'lucide-react';
 import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { fetchAllActivePlans } from '../lib/seed';
 import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import type { GroupSession, PortalPlan, PortalTeam, StudyGroup } from '../types/portal';
 
+function toLocalDateTimeInputValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function SessionsAndGroupPage() {
   const { portalUser } = useAuth();
+  const { toast } = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
+  const { data: plans = [] } = useQuery({
+    queryKey: ['all_active_plans'],
+    queryFn: fetchAllActivePlans,
+  });
+
   const [group, setGroup] = useState<StudyGroup | null>(null);
   const [team, setTeam] = useState<PortalTeam | null>(null);
-  const [plans, setPlans] = useState<PortalPlan[]>([]);
   const [sessions, setSessions] = useState<GroupSession[]>([]);
   const [planFilter, setPlanFilter] = useState('all');
   const [showCreate, setShowCreate] = useState(false);
+  const [imgError, setImgError] = useState(false);
 
   const [title, setTitle] = useState('');
   const [topic, setTopic] = useState('Conversation practice');
@@ -39,20 +55,26 @@ export function SessionsAndGroupPage() {
   const [busySessionId, setBusySessionId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
 
-  useEffect(() => {
-    if (!portalUser) return;
-    void fetchAllActivePlans().then(setPlans);
+  const portalUid = portalUser?.uid || '';
+  const portalGroupId = portalUser?.groupId || '';
+  const portalTeamId = portalUser?.teamId || '';
+  const userAssignedKey = (portalUser?.assignedPlanIds || []).join('|');
 
-    if (portalUser.groupId) {
-      getDoc(doc(db, 'portal_groups', portalUser.groupId))
+  useEffect(() => {
+    if (!portalUid) return;
+
+    if (portalGroupId) {
+      getDoc(doc(db, 'portal_groups', portalGroupId))
         .then((snap) => {
           if (snap.exists()) setGroup({ id: snap.id, ...(snap.data() as Omit<StudyGroup, 'id'>) });
         })
         .catch(() => {});
+    } else {
+      setGroup(null);
     }
 
-    if (portalUser.teamId) {
-      getDoc(doc(db, 'portal_teams', portalUser.teamId))
+    if (portalTeamId) {
+      getDoc(doc(db, 'portal_teams', portalTeamId))
         .then((snap) => {
           if (snap.exists()) setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
         })
@@ -71,22 +93,24 @@ export function SessionsAndGroupPage() {
         );
       },
       (err) => {
-        setFeedback({
-          type: 'error',
-          text: formatPortalError(err, 'Unable to load group sessions.'),
-        });
+        const msg = formatPortalError(err, 'Unable to load group sessions.');
+        setFeedback({ type: 'error', text: msg });
+        toastRef.current.error(msg);
       }
     );
     return () => unsub();
-  }, [portalUser]);
+  }, [portalUid, portalGroupId, portalTeamId]);
+
+  const teamAssignedKey = (team?.assignedPlanIds || []).join('|');
+  const teamPlanFallback = team?.planId || '';
 
   const appliedPlanIds = useMemo(() => {
     const ids = new Set<string>();
-    (portalUser?.assignedPlanIds || []).forEach((id) => ids.add(id));
-    (team?.assignedPlanIds || []).forEach((id) => ids.add(id));
-    if (team?.planId) ids.add(team.planId);
+    if (userAssignedKey) userAssignedKey.split('|').forEach((id) => ids.add(id));
+    if (teamAssignedKey) teamAssignedKey.split('|').forEach((id) => ids.add(id));
+    if (teamPlanFallback) ids.add(teamPlanFallback);
     return Array.from(ids);
-  }, [portalUser, team]);
+  }, [userAssignedKey, teamAssignedKey, teamPlanFallback]);
 
   const planMap = useMemo(() => {
     const m = new Map<string, PortalPlan>();
@@ -102,6 +126,8 @@ export function SessionsAndGroupPage() {
     return sessions.filter((s) => s.planIds?.includes(planFilter));
   }, [sessions, planFilter, appliedPlanIds]);
 
+  const minDateTimeLocal = toLocalDateTimeInputValue(new Date());
+
   if (!portalUser) return null;
 
   function toggleSelectedPlan(planId: string) {
@@ -113,6 +139,20 @@ export function SessionsAndGroupPage() {
   async function handleCreateSession(e: React.FormEvent) {
     e.preventDefault();
     if (!portalUser || !title.trim() || !startLocal) return;
+    const parsedTime = Date.parse(startLocal);
+    if (Number.isNaN(parsedTime) || parsedTime < Date.now() - 60_000) {
+      const msg = 'Please choose an upcoming date and time for your session.';
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
+      return;
+    }
+    if (locationType === 'external' && !meetingLink.trim()) {
+      const msg = 'Please enter a meeting URL for an external session.';
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
+      return;
+    }
+
     setSaving(true);
     setFeedback(null);
     try {
@@ -143,11 +183,11 @@ export function SessionsAndGroupPage() {
       setMeetingLink('');
       setSelectedPlanIds([]);
       setFeedback({ type: 'success', text: 'Group practice session published.' });
+      toast.success('Group practice session published.');
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to publish group session.'),
-      });
+      const msg = formatPortalError(err, 'Unable to publish group session.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -169,20 +209,23 @@ export function SessionsAndGroupPage() {
           attendeeNames: nextNames,
           updatedAt: serverTimestamp(),
         });
-        setFeedback({ type: 'success', text: `You left "${session.title}".` });
+        const msg = `You left "${session.title}".`;
+        setFeedback({ type: 'success', text: msg });
+        toast.info(msg);
       } else if (session.attendeeIds.length < session.capacity) {
         await updateDoc(doc(db, 'portal_sessions', session.id), {
           attendeeIds: [...session.attendeeIds, portalUser.uid],
           attendeeNames: [...session.attendeeNames, firstName],
           updatedAt: serverTimestamp(),
         });
-        setFeedback({ type: 'success', text: `You joined "${session.title}".` });
+        const msg = `You joined "${session.title}".`;
+        setFeedback({ type: 'success', text: msg });
+        toast.success(msg);
       }
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update session attendance.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update session attendance.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusySessionId(null);
     }
@@ -196,12 +239,13 @@ export function SessionsAndGroupPage() {
         status: 'cancelled',
         updatedAt: serverTimestamp(),
       });
-      setFeedback({ type: 'success', text: `Cancelled session "${session.title}".` });
+      const msg = `Cancelled session "${session.title}".`;
+      setFeedback({ type: 'success', text: msg });
+      toast.info(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to cancel session.'),
-      });
+      const msg = formatPortalError(err, 'Unable to cancel session.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusySessionId(null);
     }
@@ -238,12 +282,19 @@ export function SessionsAndGroupPage() {
             )}
           </div>
           <div className="md:col-span-4">
-            <img
-              src="/src/assets/images/study_circle_session_1795519555566.jpg"
-              alt="Learners practising Kinyarwanda together in a study circle"
-              referrerPolicy="no-referrer"
-              className="w-full h-36 object-cover rounded-2xl border border-[#084F4E]/10"
-            />
+            {!imgError ? (
+              <img
+                src="/src/assets/images/study_circle_session_1795519555566.jpg"
+                alt="Learners practising Kinyarwanda together in a study circle"
+                referrerPolicy="no-referrer"
+                onError={() => setImgError(true)}
+                className="w-full h-36 object-cover rounded-2xl border border-[#084F4E]/10"
+              />
+            ) : (
+              <div className="w-full h-36 rounded-2xl border border-[#084F4E]/12 bg-[#E6F4F4] flex items-center justify-center px-4 text-center text-xs font-medium text-[#084F4E]">
+                Ijwi Study Circle · Weekly live peer practice
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -327,6 +378,7 @@ export function SessionsAndGroupPage() {
                 <input
                   required
                   type="datetime-local"
+                  min={minDateTimeLocal}
                   value={startLocal}
                   onChange={(e) => setStartLocal(e.target.value)}
                   className="w-full px-3.5 py-2 rounded-xl border border-[#084F4E]/20 text-sm"
@@ -402,6 +454,7 @@ export function SessionsAndGroupPage() {
 
             {locationType === 'external' && (
               <input
+                required
                 type="url"
                 placeholder="https://meet.google.com/..."
                 value={meetingLink}

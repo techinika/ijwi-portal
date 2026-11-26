@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   collection,
   doc,
@@ -13,6 +14,7 @@ import {
 import { Calendar, Clock, Download, RefreshCw, Star } from 'lucide-react';
 import { auth, db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { fetchActiveTeachers } from '../lib/seed';
 import { dispatchPortalEmail, pushNotification } from '../lib/portalActions';
 import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
@@ -33,8 +35,15 @@ const COMMON_TIMEZONES = [
 
 export function BookingsPage() {
   const { portalUser } = useAuth();
-  const [teachers, setTeachers] = useState<TeacherProfile[]>([]);
-  const [teachersLoading, setTeachersLoading] = useState(true);
+  const { toast } = useToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
+  const { data: teachers = [], isLoading: teachersLoading } = useQuery({
+    queryKey: ['active_teachers'],
+    queryFn: fetchActiveTeachers,
+  });
+
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
   const [assignedTeacher, setAssignedTeacher] = useState<TeacherProfile | null>(null);
   const [busySlots, setBusySlots] = useState<BusySlot[]>([]);
@@ -52,42 +61,44 @@ export function BookingsPage() {
   const [ratingValue, setRatingValue] = useState(5);
   const [ratingComment, setRatingComment] = useState('');
 
+  const portalUid = portalUser?.uid || '';
+  const portalTeacherId = portalUser?.teacherId || '';
+  const portalTimezone = portalUser?.timezone || '';
+
   useEffect(() => {
-    if (!portalUser) return;
-    setTimezone(portalUser.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
-    setTeachersLoading(true);
+    if (portalTimezone) {
+      setTimezone(portalTimezone);
+    }
+  }, [portalTimezone]);
 
-    fetchActiveTeachers()
-      .then((activeList) => {
-        setTeachers(activeList);
-        setSelectedTeacherId((prev) => {
-          if (prev && activeList.some((t) => t.uid === prev)) return prev;
-          if (portalUser.teacherId && activeList.some((t) => t.uid === portalUser.teacherId)) {
-            return portalUser.teacherId;
-          }
-          return activeList[0]?.uid || portalUser.teacherId || '';
-        });
-      })
-      .catch((err) => {
-        setFeedback({
-          type: 'error',
-          text: formatPortalError(err, 'Unable to load teacher availability.'),
-        });
-      })
-      .finally(() => setTeachersLoading(false));
+  useEffect(() => {
+    if (teachers.length === 0) return;
+    setSelectedTeacherId((prev) => {
+      if (prev && teachers.some((t) => t.uid === prev)) return prev;
+      if (portalTeacherId && teachers.some((t) => t.uid === portalTeacherId)) {
+        return portalTeacherId;
+      }
+      return teachers[0]?.uid || portalTeacherId || '';
+    });
+  }, [teachers, portalTeacherId]);
 
-    if (portalUser.teacherId) {
-      getDoc(doc(db, 'portal_teachers', portalUser.teacherId))
+  useEffect(() => {
+    if (!portalUid) return;
+
+    if (portalTeacherId) {
+      getDoc(doc(db, 'portal_teachers', portalTeacherId))
         .then((snap) => {
           if (snap.exists()) {
             setAssignedTeacher(snap.data() as TeacherProfile);
           }
         })
         .catch(() => {});
+    } else {
+      setAssignedTeacher(null);
     }
 
     const unsubMine = onSnapshot(
-      query(collection(db, 'portal_bookings'), where('studentId', '==', portalUser.uid)),
+      query(collection(db, 'portal_bookings'), where('studentId', '==', portalUid)),
       (snap) => {
         const list = snap.docs
           .map((d) => ({ id: d.id, ...(d.data() as Omit<PortalBooking, 'id'>) }))
@@ -95,15 +106,14 @@ export function BookingsPage() {
         setMyBookings(list);
       },
       (err) => {
-        setFeedback({
-          type: 'error',
-          text: formatPortalError(err, 'Unable to load your bookings.'),
-        });
+        const msg = formatPortalError(err, 'Unable to load your bookings.');
+        setFeedback({ type: 'error', text: msg });
+        toastRef.current.error(msg);
       }
     );
 
     return () => unsubMine();
-  }, [portalUser]);
+  }, [portalUid, portalTeacherId]);
 
   const teacher = useMemo(() => {
     const fromList = teachers.find((t) => t.uid === selectedTeacherId);
@@ -129,10 +139,9 @@ export function BookingsPage() {
         );
       },
       (err) => {
-        setFeedback({
-          type: 'error',
-          text: formatPortalError(err, 'Unable to load teacher schedule.'),
-        });
+        const msg = formatPortalError(err, 'Unable to load teacher schedule.');
+        setFeedback({ type: 'error', text: msg });
+        toastRef.current.error(msg);
       }
     );
     return () => unsubBusy();
@@ -156,11 +165,37 @@ export function BookingsPage() {
     return teacher;
   }, [reschedulingBooking, teachers, assignedTeacher, teacher]);
 
-  // Generate next 10 days of open teacher slots in UTC, displayed in user's local timezone
+  // Generate next 10 days of open teacher slots in UTC, displayed & grouped in user's local timezone
   const openSlots = useMemo(() => {
     if (!bookingTeacher) return [];
-    const slots: Array<{ startUtc: string; endUtc: string; localLabel: string }> = [];
+    const slots: Array<{
+      startUtc: string;
+      endUtc: string;
+      dayHeader: string;
+      timeLabel: string;
+      localLabel: string;
+    }> = [];
     const now = new Date();
+    const dayFmt = new Intl.DateTimeFormat(undefined, {
+      weekday: 'long',
+      month: 'short',
+      day: 'numeric',
+      timeZone: timezone,
+    });
+    const timeFmt = new Intl.DateTimeFormat(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: timezone,
+    });
+    const fullFmt = new Intl.DateTimeFormat(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: timezone,
+    });
+
     for (let dayOffset = 1; dayOffset <= 10; dayOffset++) {
       const d = new Date(now.getTime() + dayOffset * 86400_000);
       const yyyyMmDd = d.toISOString().slice(0, 10);
@@ -175,20 +210,31 @@ export function BookingsPage() {
         const startUtc = start.toISOString();
         const endUtc = end.toISOString();
         if (!hasBookingConflict(startUtc, endUtc, effectiveConflicts)) {
-          const localLabel = new Intl.DateTimeFormat(undefined, {
-            weekday: 'short',
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-            timeZone: timezone,
-          }).format(start);
-          slots.push({ startUtc, endUtc, localLabel });
+          slots.push({
+            startUtc,
+            endUtc,
+            dayHeader: dayFmt.format(start),
+            timeLabel: timeFmt.format(start),
+            localLabel: fullFmt.format(start),
+          });
         }
       }
     }
     return slots;
   }, [bookingTeacher, effectiveConflicts, timezone]);
+
+  const groupedSlots = useMemo(() => {
+    const groups: Array<{ dayHeader: string; slots: typeof openSlots }> = [];
+    for (const slot of openSlots) {
+      const last = groups[groups.length - 1];
+      if (last && last.dayHeader === slot.dayHeader) {
+        last.slots.push(slot);
+      } else {
+        groups.push({ dayHeader: slot.dayHeader, slots: [slot] });
+      }
+    }
+    return groups;
+  }, [openSlots]);
 
   async function handleTimezoneChange(nextTz: string) {
     setTimezone(nextTz);
@@ -198,11 +244,11 @@ export function BookingsPage() {
           timezone: nextTz,
           updatedAt: serverTimestamp(),
         });
+        toast.success(`Time zone updated to ${nextTz}.`);
       } catch (err) {
-        setFeedback({
-          type: 'error',
-          text: formatPortalError(err, 'Unable to save timezone preference.'),
-        });
+        const msg = formatPortalError(err, 'Unable to save timezone preference.');
+        setFeedback({ type: 'error', text: msg });
+        toast.error(msg);
       }
     }
   }
@@ -212,7 +258,9 @@ export function BookingsPage() {
     const chosen = openSlots.find((s) => s.startUtc === selectedSlotUtc);
     if (!chosen) return;
     if (hasBookingConflict(chosen.startUtc, chosen.endUtc, effectiveConflicts)) {
-      setFeedback({ type: 'error', text: 'That slot was just booked. Please pick another time.' });
+      const msg = 'That slot was just booked. Please pick another time.';
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
       return;
     }
 
@@ -248,6 +296,7 @@ export function BookingsPage() {
         setReschedulingBooking(null);
         setSelectedSlotUtc('');
         setFeedback({ type: 'success', text: 'Lesson rescheduled!' });
+        toast.success(`Lesson moved to ${chosen.localLabel}.`);
         return;
       }
 
@@ -297,15 +346,13 @@ export function BookingsPage() {
 
       setSelectedSlotUtc('');
       setNote('');
-      setFeedback({
-        type: 'success',
-        text: 'Lesson confirmed! You can download the calendar (.ics) file under My lessons.',
-      });
+      const msg = 'Lesson confirmed! You can download the calendar (.ics) file under My lessons.';
+      setFeedback({ type: 'success', text: msg });
+      toast.success(`Lesson booked for ${chosen.localLabel}.`);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to confirm lesson booking.'),
-      });
+      const msg = formatPortalError(err, 'Unable to confirm lesson booking.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -338,17 +385,15 @@ export function BookingsPage() {
         setReschedulingBooking(null);
         setSelectedSlotUtc('');
       }
-      setFeedback({
-        type: 'success',
-        text: freeCancel
-          ? 'Lesson cancelled.'
-          : 'Lesson cancelled within the 12-hour window and noted on your profile.',
-      });
+      const msg = freeCancel
+        ? 'Lesson cancelled.'
+        : 'Lesson cancelled within the 12-hour window and noted on your profile.';
+      setFeedback({ type: 'success', text: msg });
+      toast.info(msg);
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to cancel booking.'),
-      });
+      const msg = formatPortalError(err, 'Unable to cancel booking.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyBookingId(null);
     }
@@ -388,11 +433,11 @@ export function BookingsPage() {
       a.download = `ijwi-lesson-${b.id}.ics`;
       a.click();
       URL.revokeObjectURL(url);
+      toast.success('Calendar invite (.ics) downloaded.');
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to download calendar file.'),
-      });
+      const msg = formatPortalError(err, 'Unable to download calendar file.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyBookingId(null);
     }
@@ -416,15 +461,13 @@ export function BookingsPage() {
       });
       setRatingBookingId(null);
       setRatingComment('');
-      setFeedback({
-        type: 'success',
-        text: 'Thank you! Your feedback was shared privately with the Ijwi admin team.',
-      });
+      const msg = 'Thank you! Your feedback was shared privately with the Ijwi admin team.';
+      setFeedback({ type: 'success', text: msg });
+      toast.success('Lesson rating submitted.');
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to submit feedback.'),
-      });
+      const msg = formatPortalError(err, 'Unable to submit feedback.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyBookingId(null);
     }
@@ -538,30 +581,39 @@ export function BookingsPage() {
                 Available times ({bookingTeacher.lessonLengthMin} min)
               </h2>
 
-              {openSlots.length === 0 ? (
+              {groupedSlots.length === 0 ? (
                 <p className="text-sm text-[#3F4F4F] py-6">
                   No open slots in the next 10 days. Check back soon or contact learn@ijwi.me.
                 </p>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-80 overflow-y-auto pr-1">
-                  {openSlots.map((slot) => {
-                    const active = selectedSlotUtc === slot.startUtc;
-                    return (
-                      <button
-                        key={slot.startUtc}
-                        type="button"
-                        onClick={() => setSelectedSlotUtc(slot.startUtc)}
-                        className={`min-h-[44px] flex items-center gap-2.5 px-4 py-3 rounded-xl border text-left text-sm transition-colors ${
-                          active
-                            ? 'border-[#084F4E] bg-[#084F4E] text-white font-semibold'
-                            : 'border-[#084F4E]/15 text-[#1F2A2A] hover:bg-[#E6F4F4]/50'
-                        }`}
-                      >
-                        <Clock className="w-4 h-4 shrink-0" />
-                        <span className="tabular-nums">{slot.localLabel}</span>
-                      </button>
-                    );
-                  })}
+                <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
+                  {groupedSlots.map((group) => (
+                    <div key={group.dayHeader} className="space-y-2">
+                      <p className="text-xs font-semibold text-[#0E7C7B] sticky top-0 bg-white py-1">
+                        {group.dayHeader}
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                        {group.slots.map((slot) => {
+                          const active = selectedSlotUtc === slot.startUtc;
+                          return (
+                            <button
+                              key={slot.startUtc}
+                              type="button"
+                              onClick={() => setSelectedSlotUtc(slot.startUtc)}
+                              className={`min-h-[44px] flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border text-sm transition-colors ${
+                                active
+                                  ? 'border-[#084F4E] bg-[#084F4E] text-white font-semibold'
+                                  : 'border-[#084F4E]/15 text-[#1F2A2A] hover:bg-[#E6F4F4]/50'
+                              }`}
+                            >
+                              <Clock className="w-3.5 h-3.5 shrink-0" />
+                              <span className="tabular-nums">{slot.timeLabel}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
 

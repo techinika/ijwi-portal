@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import {
   collection,
   doc,
@@ -11,9 +12,10 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { Calendar, BookOpen, Users, Award, ArrowRight, CheckCircle2, Target } from 'lucide-react';
+import { Calendar, BookOpen, Users, Award, ArrowRight, CheckCircle2, Target, PlayCircle } from 'lucide-react';
 import { db, formatPortalError } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { DEFAULT_PLANS, fetchAllActivePlans } from '../lib/seed';
 import { FeedbackBanner, type FeedbackState } from '../components/FeedbackBanner';
 import type {
@@ -29,8 +31,17 @@ import type {
 
 export function DashboardPage() {
   const { portalUser } = useAuth();
+  const { toast } = useToast();
   const navigate = useNavigate();
-  const [allPlans, setAllPlans] = useState<PortalPlan[]>(DEFAULT_PLANS);
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
+  const { data: queriedPlans = [] } = useQuery({
+    queryKey: ['all_active_plans'],
+    queryFn: fetchAllActivePlans,
+  });
+  const allPlans: PortalPlan[] = queriedPlans.length > 0 ? queriedPlans : DEFAULT_PLANS;
+
   const [selectedPlanId, setSelectedPlanId] = useState<string>('');
   const [team, setTeam] = useState<PortalTeam | null>(null);
   const [teacher, setTeacher] = useState<TeacherProfile | null>(null);
@@ -44,22 +55,22 @@ export function DashboardPage() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
 
+  const portalUid = portalUser?.uid || '';
+  const portalTeamId = portalUser?.teamId || '';
+  const portalTeacherId = portalUser?.teacherId || '';
+  const portalGroupId = portalUser?.groupId || '';
+
   useEffect(() => {
-    if (!portalUser) return;
+    if (!portalUid) return;
 
     const onErr = (err: unknown) => {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to load some dashboard data.'),
-      });
+      const msg = formatPortalError(err, 'Unable to load some dashboard data.');
+      setFeedback({ type: 'error', text: msg });
+      toastRef.current.error(msg);
     };
 
-    void fetchAllActivePlans().then((list) => {
-      if (list.length > 0) setAllPlans(list);
-    });
-
-    if (portalUser.teamId) {
-      getDoc(doc(db, 'portal_teams', portalUser.teamId))
+    if (portalTeamId) {
+      getDoc(doc(db, 'portal_teams', portalTeamId))
         .then((snap) => {
           if (snap.exists()) {
             setTeam({ id: snap.id, ...(snap.data() as Omit<PortalTeam, 'id'>) });
@@ -70,8 +81,8 @@ export function DashboardPage() {
       setTeam(null);
     }
 
-    if (portalUser.teacherId) {
-      getDoc(doc(db, 'portal_teachers', portalUser.teacherId))
+    if (portalTeacherId) {
+      getDoc(doc(db, 'portal_teachers', portalTeacherId))
         .then((snap) => {
           if (snap.exists()) {
             setTeacher(snap.data() as TeacherProfile);
@@ -84,18 +95,20 @@ export function DashboardPage() {
       setTeacher(null);
     }
 
-    if (portalUser.groupId) {
-      getDoc(doc(db, 'portal_groups', portalUser.groupId))
+    if (portalGroupId) {
+      getDoc(doc(db, 'portal_groups', portalGroupId))
         .then((snap) => {
           if (snap.exists()) {
             setGroup({ id: snap.id, ...(snap.data() as Omit<StudyGroup, 'id'>) });
           }
         })
         .catch(() => {});
+    } else {
+      setGroup(null);
     }
 
     const unsubBookings = onSnapshot(
-      query(collection(db, 'portal_bookings'), where('studentId', '==', portalUser.uid)),
+      query(collection(db, 'portal_bookings'), where('studentId', '==', portalUid)),
       (snap) => {
         const list = snap.docs
           .map((d) => ({ id: d.id, ...(d.data() as Omit<PortalBooking, 'id'>) }))
@@ -108,8 +121,8 @@ export function DashboardPage() {
 
     const unsubProgress = onSnapshot(
       query(
-        collection(db, 'portal_progress', portalUser.uid, 'lessons'),
-        where('studentId', '==', portalUser.uid)
+        collection(db, 'portal_progress', portalUid, 'lessons'),
+        where('studentId', '==', portalUid)
       ),
       (snap) => {
         const map: Record<string, LessonProgress> = {};
@@ -150,25 +163,32 @@ export function DashboardPage() {
       unsubResources();
       unsubSessions();
     };
-  }, [portalUser]);
+  }, [portalUid, portalTeamId, portalTeacherId, portalGroupId]);
+
+  const userAssignedKey = (portalUser?.assignedPlanIds || []).join('|');
+  const teamAssignedKey = (team?.assignedPlanIds || []).join('|');
+  const teamPlanFallback = team?.planId || '';
 
   const appliedPlanIds = useMemo(() => {
     const ids = new Set<string>();
-    (portalUser?.assignedPlanIds || []).forEach((id) => ids.add(id));
-    (team?.assignedPlanIds || []).forEach((id) => ids.add(id));
-    if (team?.planId) ids.add(team.planId);
+    if (userAssignedKey) userAssignedKey.split('|').forEach((id) => ids.add(id));
+    if (teamAssignedKey) teamAssignedKey.split('|').forEach((id) => ids.add(id));
+    if (teamPlanFallback) ids.add(teamPlanFallback);
     return Array.from(ids);
-  }, [portalUser, team]);
+  }, [userAssignedKey, teamAssignedKey, teamPlanFallback]);
+
+  const appliedPlanIdsKey = appliedPlanIds.join('|');
 
   useEffect(() => {
-    if (!portalUser || appliedPlanIds.length === 0) {
+    if (!portalUid || !appliedPlanIdsKey) {
       setPlanLinkedResources([]);
       return;
     }
+    const targetIds = appliedPlanIdsKey.split('|').slice(0, 10);
     const unsub = onSnapshot(
       query(
         collection(db, 'portal_resources'),
-        where('planIds', 'array-contains-any', appliedPlanIds.slice(0, 10))
+        where('planIds', 'array-contains-any', targetIds)
       ),
       (snap) => {
         setPlanLinkedResources(
@@ -176,14 +196,13 @@ export function DashboardPage() {
         );
       },
       (err) => {
-        setFeedback({
-          type: 'error',
-          text: formatPortalError(err, 'Unable to load plan resources.'),
-        });
+        const msg = formatPortalError(err, 'Unable to load plan resources.');
+        setFeedback({ type: 'error', text: msg });
+        toastRef.current.error(msg);
       }
     );
     return () => unsub();
-  }, [portalUser, appliedPlanIds]);
+  }, [portalUid, appliedPlanIdsKey]);
 
   const appliedPlans = useMemo(() => {
     const matched = allPlans.filter((p) => appliedPlanIds.includes(p.id));
@@ -213,6 +232,18 @@ export function DashboardPage() {
   const doneLessons = plan.learningPath
     .flatMap((lvl) => lvl.lessons)
     .filter((l) => progressMap[l.id]?.status === 'done').length;
+  const progressPercent = totalLessons > 0 ? Math.round((doneLessons / totalLessons) * 100) : 0;
+
+  const nextIncompleteLesson = plan.learningPath
+    .flatMap((lvl) => lvl.lessons.map((l) => ({ levelTitle: lvl.title, lesson: l })))
+    .find(({ lesson }) => progressMap[lesson.id]?.status !== 'done');
+
+  function jumpToLesson(lessonId: string) {
+    const el = document.getElementById(`lesson-${lessonId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
 
   async function savePlacement(level: string) {
     if (!portalUser) return;
@@ -224,11 +255,11 @@ export function DashboardPage() {
         updatedAt: serverTimestamp(),
       });
       setFeedback({ type: 'success', text: 'Starting level saved.' });
+      toast.success('Starting level saved.');
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to save placement level.'),
-      });
+      const msg = formatPortalError(err, 'Unable to save placement level.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setSavingPlacement(false);
     }
@@ -259,11 +290,15 @@ export function DashboardPage() {
         ...(next === 'done' ? { completedAt: new Date().toISOString() } : {}),
         updatedAt: serverTimestamp(),
       });
+      if (next === 'done') {
+        toast.success(`Completed "${lessonTitle}".`);
+      } else if (next === 'in_progress') {
+        toast.info(`Marked "${lessonTitle}" as in progress.`);
+      }
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to update lesson status.'),
-      });
+      const msg = formatPortalError(err, 'Unable to update lesson status.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -286,12 +321,12 @@ export function DashboardPage() {
         issuedAt: new Date().toISOString(),
         createdAt: serverTimestamp(),
       });
+      toast.success(`Certificate issued for ${levelTitle}!`);
       navigate('/progress');
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: formatPortalError(err, 'Unable to issue certificate.'),
-      });
+      const msg = formatPortalError(err, 'Unable to issue certificate.');
+      setFeedback({ type: 'error', text: msg });
+      toast.error(msg);
     } finally {
       setBusyKey(null);
     }
@@ -301,19 +336,19 @@ export function DashboardPage() {
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12 space-y-8">
       <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
       {/* Welcome Card */}
-      <section className="rounded-[24px] border border-[#084F4E]/15 bg-[#FAFBFB] p-6 sm:p-8">
+      <section className="rounded-[24px] border border-[#084F4E]/15 bg-[#FAFBFB] p-6 sm:p-8 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-          <div>
-            <p className="text-sm font-medium text-[#0E7C7B] mb-1">
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-[#0E7C7B]">
               Muraho, {firstName}
             </p>
             <h1 className="font-display text-3xl sm:text-4xl font-semibold text-[#084F4E]">
               Your Kinyarwanda learning space
             </h1>
-            <p className="text-sm text-[#3F4F4F] mt-2">
+            <p className="text-sm text-[#3F4F4F]">
               {plan.name} ·{' '}
               <span className="tabular-nums font-medium text-[#084F4E]">
-                {doneLessons}/{totalLessons} lessons done
+                {doneLessons}/{totalLessons} lessons done ({progressPercent}%)
               </span>
               {team ? ` · Team: ${team.name}` : group ? ` · Study circle: ${group.name}` : ''}
             </p>
@@ -346,6 +381,33 @@ export function DashboardPage() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* Overall Plan Progress Bar + Continue CTA */}
+        <div className="pt-4 border-t border-[#084F4E]/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex-1 space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium text-[#3F4F4F]">Plan completion</span>
+              <span className="font-semibold text-[#084F4E] tabular-nums">{progressPercent}%</span>
+            </div>
+            <div className="h-2.5 w-full rounded-full bg-[#E6F4F4] overflow-hidden">
+              <div
+                className="h-full rounded-full bg-[#084F4E] transition-all duration-300"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+          </div>
+
+          {nextIncompleteLesson && (
+            <button
+              type="button"
+              onClick={() => jumpToLesson(nextIncompleteLesson.lesson.id)}
+              className="w-full sm:w-auto min-h-[42px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-[#084F4E] text-white text-xs font-semibold hover:bg-[#0E7C7B] transition-colors whitespace-nowrap shrink-0"
+            >
+              <PlayCircle className="w-4 h-4" />
+              <span>Continue: {nextIncompleteLesson.lesson.title}</span>
+            </button>
+          )}
         </div>
       </section>
 
@@ -476,7 +538,11 @@ export function DashboardPage() {
                             : 'Not started';
 
                       return (
-                        <div key={lesson.id} className="py-3.5 first:pt-1 last:pb-1">
+                        <div
+                          key={lesson.id}
+                          id={`lesson-${lesson.id}`}
+                          className="py-3.5 first:pt-1 last:pb-1 scroll-mt-24"
+                        >
                           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 sm:gap-4">
                             <div>
                               <p className="text-sm font-semibold text-[#1F2A2A]">

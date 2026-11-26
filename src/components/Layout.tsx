@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   Bell,
@@ -37,12 +37,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
     signInWithGoogle,
     logout,
     markNotificationRead,
+    markAllNotificationsRead,
   } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
+  const notifContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!pendingRedirectPath) return;
@@ -50,6 +52,45 @@ export function Layout({ children }: { children: React.ReactNode }) {
     clearPendingRedirectPath();
     navigate(target);
   }, [pendingRedirectPath, clearPendingRedirectPath, navigate]);
+
+  // Smooth scroll to hash targets like /#plans or /#team-pricing
+  useEffect(() => {
+    if (!location.hash) return;
+    const id = location.hash.slice(1);
+    const timer = window.setTimeout(() => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [location.pathname, location.hash]);
+
+  // Close popovers on outside click or Escape
+  useEffect(() => {
+    if (!notifOpen && !mobileOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setNotifOpen(false);
+        setMobileOpen(false);
+      }
+    };
+    const onPointerDown = (e: MouseEvent) => {
+      if (
+        notifOpen &&
+        notifContainerRef.current &&
+        !notifContainerRef.current.contains(e.target as Node)
+      ) {
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('mousedown', onPointerDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('mousedown', onPointerDown);
+    };
+  }, [notifOpen, mobileOpen]);
 
   const isSignedIn = Boolean(portalUser || firebaseUser);
   const displayFirstName = (
@@ -199,10 +240,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             {isSignedIn ? (
               <>
-                <div className="relative">
+                <div ref={notifContainerRef} className="relative">
                   <button
                     type="button"
                     aria-label="Notifications"
+                    aria-expanded={notifOpen}
                     onClick={() => setNotifOpen((v) => !v)}
                     className="relative min-h-[40px] min-w-[40px] flex items-center justify-center px-2.5 rounded-xl border border-[#084F4E]/12 text-[#084F4E] hover:bg-[#E6F4F4] transition-colors"
                   >
@@ -215,17 +257,28 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   </button>
                   {notifOpen && (
                     <div className="fixed sm:absolute left-4 right-4 sm:left-auto sm:right-0 top-[4.25rem] sm:top-auto sm:mt-2 sm:w-80 rounded-2xl border border-[#084F4E]/15 bg-white shadow-lg p-4 z-50">
-                      <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center justify-between gap-2 mb-3">
                         <span className="font-display font-semibold text-sm text-[#084F4E]">
                           Notifications
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => setNotifOpen(false)}
-                          className="text-xs text-[#3F4F4F] hover:text-[#084F4E] py-1 px-2"
-                        >
-                          Close
-                        </button>
+                        <div className="flex items-center gap-2">
+                          {unreadCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => void markAllNotificationsRead()}
+                              className="text-xs font-medium text-[#0E7C7B] hover:underline py-1 px-1.5"
+                            >
+                              Mark all read
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setNotifOpen(false)}
+                            className="text-xs text-[#3F4F4F] hover:text-[#084F4E] py-1 px-2"
+                          >
+                            Close
+                          </button>
+                        </div>
                       </div>
                       {notifications.length === 0 ? (
                         <p className="text-sm text-[#3F4F4F] py-4 text-center">
@@ -304,6 +357,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               type="button"
               onClick={() => setMobileOpen((v) => !v)}
               aria-label="Toggle menu"
+              aria-expanded={mobileOpen}
               className="md:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border border-[#084F4E]/12 text-[#084F4E]"
             >
               {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -481,7 +535,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
       <footer
         className={`border-t border-[#084F4E]/10 bg-white py-6 sm:py-8 mt-10 sm:mt-16 ${
-          showBottomNav ? 'pb-24 md:pb-8' : ''
+          showBottomNav ? 'pb-24 md:pb-8' : location.pathname === '/' ? 'pb-24 lg:pb-8' : ''
         }`}
       >
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-4 text-sm text-[#3F4F4F] text-center sm:text-left">
